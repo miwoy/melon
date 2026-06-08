@@ -69,7 +69,11 @@ systemctl reload nginx
 
 log "健康检查"
 for attempt in {1..15}; do
-  if curl --fail --silent --show-error http://127.0.0.1:4000/api/auth/status >/dev/null; then
+  set +e
+  curl --fail --silent --show-error http://127.0.0.1:4000/api/auth/status >/dev/null
+  health_status=$?
+  set -e
+  if [ "$health_status" -eq 0 ]; then
     break
   fi
   if [ "$attempt" -eq 15 ]; then
