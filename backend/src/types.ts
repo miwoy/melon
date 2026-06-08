@@ -56,6 +56,8 @@ export type Order = {
   price: number;
   leverage: number;
   fee: number;
+  closeAmount: number;
+  closeFee: number;
   closePnl: number;
   margin: number;
   status: OrderStatus;
@@ -76,6 +78,35 @@ export type AccountSnapshot = {
   totalFees: number;
   positions: Position[];
   orders: Order[];
+};
+
+export type AccountEquityEvent = {
+  id: string;
+  accountId: string;
+  orderId: string;
+  positionId?: string;
+  symbol: string;
+  side: OrderSide;
+  closeAmount: number;
+  closePrice: number;
+  closePnl: number;
+  fee: number;
+  realizedPnl: number;
+  equity: number;
+  cash: number;
+  totalFees: number;
+  createdAt: number;
+};
+
+export type AccountStats = {
+  totalTrades: number;
+  winRate: number;
+  totalPnl: number;
+  totalFees: number;
+  feeRatio: number;
+  maxDrawdown: number;
+  equityCurve: AccountEquityEvent[];
+  recentEvents: AccountEquityEvent[];
 };
 
 export type Paginated<T> = {

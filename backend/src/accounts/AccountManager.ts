@@ -1,8 +1,8 @@
-import type { Account, Order as DbOrder, Position as DbPosition } from "@prisma/client";
+import type { Account, AccountEquityEvent as DbAccountEquityEvent, Order as DbOrder, Position as DbPosition } from "@prisma/client";
 import { config } from "../config.js";
 import { prisma } from "../db.js";
 import { PaperBroker } from "../broker/PaperBroker.js";
-import type { AccountKind, AccountSnapshot, CreateOrderRequest, Order, Paginated, Position, Ticker, TradingAccount, UpdatePositionRiskRequest } from "../types.js";
+import type { AccountEquityEvent, AccountKind, AccountSnapshot, AccountStats, CreateOrderRequest, Order, Paginated, Position, Ticker, TradingAccount, UpdatePositionRiskRequest } from "../types.js";
 
 type LoadedAccount = Account & {
   positions: DbPosition[];
@@ -144,6 +144,28 @@ export class AccountManager {
     return paginated(positions.map(deserializePosition), page, pageSize, total);
   }
 
+  async accountStats(): Promise<AccountStats> {
+    const accountId = this.activeAccountId;
+    const events = (await prisma.accountEquityEvent.findMany({
+      where: { accountId },
+      orderBy: { createdAt: "asc" }
+    })).map(deserializeEquityEvent);
+    const totalTrades = events.length;
+    const wins = events.filter((event) => event.closePnl > 0).length;
+    const totalPnl = events.reduce((sum, event) => sum + event.closePnl, 0);
+    const totalFees = events.length ? events[events.length - 1].totalFees : 0;
+    return {
+      totalTrades,
+      winRate: totalTrades > 0 ? wins / totalTrades : 0,
+      totalPnl,
+      totalFees,
+      feeRatio: Math.abs(totalPnl) + totalFees > 0 ? totalFees / (Math.abs(totalPnl) + totalFees) : 0,
+      maxDrawdown: maxDrawdown(events.map((event) => event.equity)),
+      equityCurve: events,
+      recentEvents: events.slice(-20).reverse()
+    };
+  }
+
   async updateTicker(ticker: Ticker): Promise<Order[]> {
     const changed: Order[] = [];
     for (const broker of this.paperBrokers.values()) {
@@ -206,12 +228,26 @@ export class AccountManager {
       for (const position of broker.persistencePositions()) {
         await tx.position.create({ data: position });
       }
+      const existingEvents = new Map(
+        (await tx.accountEquityEvent.findMany({
+          where: { accountId },
+          select: { orderId: true, closeAmount: true }
+        })).map((event) => [event.orderId, event.closeAmount])
+      );
       for (const order of broker.persistenceOrders()) {
         await tx.order.upsert({
           where: { id: order.id },
           update: serializeOrder(order),
           create: serializeOrder(order)
         });
+        const recordedCloseAmount = existingEvents.get(order.id) ?? 0;
+        if (order.closeAmount > recordedCloseAmount) {
+          await tx.accountEquityEvent.upsert({
+            where: { orderId: order.id },
+            update: serializeEquityEvent(order, snapshot),
+            create: serializeEquityEvent(order, snapshot)
+          });
+        }
       }
     });
   }
@@ -297,6 +333,8 @@ function serializeOrder(order: Order) {
     price: order.price,
     leverage: order.leverage,
     fee: order.fee,
+    closeAmount: order.closeAmount,
+    closeFee: order.closeFee,
     closePnl: order.closePnl,
     margin: order.margin,
     status: order.status,
@@ -320,6 +358,8 @@ function deserializeOrder(order: DbOrder): Order {
     price: order.price,
     leverage: order.leverage,
     fee: order.fee,
+    closeAmount: order.closeAmount ?? 0,
+    closeFee: order.closeFee ?? 0,
     closePnl: order.closePnl ?? 0,
     margin: order.margin,
     status: order.status as Order["status"],
@@ -327,6 +367,55 @@ function deserializeOrder(order: DbOrder): Order {
     reason: order.reason ?? undefined,
     createdAt: order.createdAt.getTime()
   };
+}
+
+function serializeEquityEvent(order: Order, snapshot: AccountSnapshot) {
+  return {
+    accountId: order.accountId,
+    orderId: order.id,
+    positionId: order.positionId,
+    symbol: order.symbol,
+    side: order.side,
+    closeAmount: order.closeAmount,
+    closePrice: order.avgFillPrice || order.price,
+    closePnl: order.closePnl,
+    fee: order.closeFee,
+    realizedPnl: snapshot.realizedPnl,
+    equity: snapshot.equity,
+    cash: snapshot.cash,
+    totalFees: snapshot.totalFees,
+    createdAt: new Date(order.createdAt)
+  };
+}
+
+function deserializeEquityEvent(event: DbAccountEquityEvent): AccountEquityEvent {
+  return {
+    id: event.id,
+    accountId: event.accountId,
+    orderId: event.orderId,
+    positionId: event.positionId ?? undefined,
+    symbol: event.symbol,
+    side: event.side as AccountEquityEvent["side"],
+    closeAmount: event.closeAmount,
+    closePrice: event.closePrice,
+    closePnl: event.closePnl,
+    fee: event.fee,
+    realizedPnl: event.realizedPnl,
+    equity: event.equity,
+    cash: event.cash,
+    totalFees: event.totalFees,
+    createdAt: event.createdAt.getTime()
+  };
+}
+
+function maxDrawdown(values: number[]) {
+  let peak = values[0] ?? 0;
+  let drawdown = 0;
+  for (const value of values) {
+    if (value > peak) peak = value;
+    if (peak > 0) drawdown = Math.max(drawdown, (peak - value) / peak);
+  }
+  return drawdown;
 }
 
 function deserializePosition(position: DbPosition): Position {

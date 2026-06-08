@@ -19,6 +19,7 @@ model Account {
   updatedAt   DateTime  @updatedAt
   positions   Position[]
   orders      Order[]
+  equityEvents AccountEquityEvent[]
 }
 
 model Position {
@@ -68,6 +69,8 @@ model Order {
   price     Float
   leverage  Int
   fee       Float
+  closeAmount Float    @default(0)
+  closeFee  Float    @default(0)
   closePnl  Float    @default(0)
   margin    Float
   status    String
@@ -78,6 +81,27 @@ model Order {
 
   @@index([accountId, createdAt])
   @@index([positionId])
+}
+
+model AccountEquityEvent {
+  id          String   @id @default(cuid())
+  accountId   String
+  orderId     String   @unique
+  positionId  String?
+  symbol      String
+  side        String
+  closeAmount Float
+  closePrice  Float
+  closePnl    Float
+  fee         Float
+  realizedPnl Float
+  equity      Float
+  cash        Float
+  totalFees   Float
+  createdAt   DateTime @default(now())
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
 }
 
 model StrategySetting {

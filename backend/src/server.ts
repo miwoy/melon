@@ -70,6 +70,8 @@ app.put("/api/accounts/active", async (request, reply) => {
 
 app.get("/api/account", async () => accountManager.snapshot());
 
+app.get("/api/account/stats", async () => accountManager.accountStats());
+
 app.get("/api/orders/history", async (request, reply) => {
   const parsed = paginationSchema.safeParse(request.query);
   if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });

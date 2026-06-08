@@ -1,4 +1,4 @@
-import type { AccountKind, AccountSnapshot, AmountUnit, Order, OrderSide, OrderType, Paginated, Position, Ticker, TradingAccount } from "../types";
+import type { AccountKind, AccountSnapshot, AccountStats, AmountUnit, Order, OrderSide, OrderType, Paginated, Position, Ticker, TradingAccount } from "../types";
 
 const AUTH_STORAGE_KEY = "melon_auth_token";
 let authToken = sessionStorage.getItem(AUTH_STORAGE_KEY) ?? "";
@@ -46,6 +46,7 @@ export const api = {
     fetchJson<AccountSnapshot>("/api/accounts/active", { method: "PUT", body: JSON.stringify({ accountId }) }),
   tickers: () => fetchJson<Record<string, Ticker>>("/api/tickers"),
   account: () => fetchJson<AccountSnapshot>("/api/account"),
+  accountStats: () => fetchJson<AccountStats>("/api/account/stats"),
   orders: (page: number, pageSize: number) => fetchJson<Paginated<Order>>(`/api/orders/history?page=${page}&pageSize=${pageSize}`),
   positionHistory: (page: number, pageSize: number) => fetchJson<Paginated<Position>>(`/api/positions/history?page=${page}&pageSize=${pageSize}`),
   updatePositionRisk: (positionId: string, payload: { takeProfitPrice?: number | null; stopLossPrice?: number | null }) =>

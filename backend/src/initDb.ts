@@ -99,6 +99,8 @@ CREATE TABLE IF NOT EXISTS "Order" (
   "price" REAL NOT NULL,
   "leverage" INTEGER NOT NULL,
   "fee" REAL NOT NULL,
+  "closeAmount" REAL NOT NULL DEFAULT 0,
+  "closeFee" REAL NOT NULL DEFAULT 0,
   "closePnl" REAL NOT NULL DEFAULT 0,
   "margin" REAL NOT NULL,
   "status" TEXT NOT NULL,
@@ -112,6 +114,8 @@ CREATE TABLE IF NOT EXISTS "Order" (
 await addColumnIfMissing("Order", "filledAmount", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Order", "remainingAmount", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Order", "avgFillPrice", "REAL NOT NULL DEFAULT 0");
+await addColumnIfMissing("Order", "closeAmount", "REAL NOT NULL DEFAULT 0");
+await addColumnIfMissing("Order", "closeFee", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Order", "closePnl", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Order", "positionId", "TEXT");
 await prisma.$executeRawUnsafe(`UPDATE "Order" SET "filledAmount" = "amount" WHERE "status" = 'filled' AND "filledAmount" = 0;`);
@@ -148,6 +152,29 @@ CREATE INDEX IF NOT EXISTS "Order_accountId_createdAt_idx" ON "Order"("accountId
 await prisma.$executeRawUnsafe(`
 CREATE INDEX IF NOT EXISTS "Order_positionId_idx" ON "Order"("positionId");
 `);
+
+await prisma.$executeRawUnsafe(`
+CREATE TABLE IF NOT EXISTS "AccountEquityEvent" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "accountId" TEXT NOT NULL,
+  "orderId" TEXT NOT NULL,
+  "positionId" TEXT,
+  "symbol" TEXT NOT NULL,
+  "side" TEXT NOT NULL,
+  "closeAmount" REAL NOT NULL,
+  "closePrice" REAL NOT NULL,
+  "closePnl" REAL NOT NULL,
+  "fee" REAL NOT NULL,
+  "realizedPnl" REAL NOT NULL,
+  "equity" REAL NOT NULL,
+  "cash" REAL NOT NULL,
+  "totalFees" REAL NOT NULL,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT "AccountEquityEvent_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+`);
+await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "AccountEquityEvent_orderId_key" ON "AccountEquityEvent"("orderId");`);
+await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AccountEquityEvent_accountId_createdAt_idx" ON "AccountEquityEvent"("accountId", "createdAt");`);
 
 await prisma.$executeRawUnsafe(`
 CREATE TABLE IF NOT EXISTS "StrategySetting" (

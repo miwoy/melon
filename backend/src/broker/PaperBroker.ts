@@ -12,7 +12,7 @@ type FeeRates = {
 };
 
 type FillResult =
-  | { ok: true; fee: number; margin: number; closePnl: number; positionId?: string; filledAmount: number; avgFillPrice: number }
+  | { ok: true; fee: number; margin: number; closeAmount: number; closeFee: number; closePnl: number; positionId?: string; filledAmount: number; avgFillPrice: number }
   | { ok: false; reason: string };
 
 type CrossAccountMetrics = {
@@ -225,6 +225,8 @@ export class PaperBroker {
 
     let fee = 0;
     let marginChange = 0;
+    let closeFilledAmount = 0;
+    let closeFee = 0;
     let closePnl = 0;
     let positionId = current.id;
 
@@ -237,6 +239,8 @@ export class PaperBroker {
       const closeAmount = Math.min(Math.abs(beforeAmount), Math.abs(signedDelta));
       const closeResult = this.closePosition(current, closeAmount, price, feeRate);
       fee += closeResult.fee;
+      closeFilledAmount += closeAmount;
+      closeFee += closeResult.fee;
       closePnl += closeResult.pnl;
       marginChange -= closeResult.releasedMargin;
 
@@ -259,7 +263,7 @@ export class PaperBroker {
       this.finishPosition(current, price);
     }
 
-    return { ok: true, fee, margin: Math.max(marginChange, 0), closePnl, positionId, filledAmount: request.amount, avgFillPrice: price };
+    return { ok: true, fee, margin: Math.max(marginChange, 0), closeAmount: closeFilledAmount, closeFee, closePnl, positionId, filledAmount: request.amount, avgFillPrice: price };
   }
 
   private fill(request: CreateOrderRequest, price: number, feeRate: number, id = nanoid()): Order {
@@ -542,6 +546,8 @@ export class PaperBroker {
     order.filledAmount = amount;
     order.remainingAmount = 0;
     order.avgFillPrice = price;
+    order.closeAmount = amount;
+    order.closeFee = closeResult.fee;
     order.closePnl = closeResult.pnl;
     order.positionId = position.id;
     order.reason = reason;
@@ -584,6 +590,8 @@ export class PaperBroker {
     order.remainingAmount = Math.max(order.amount - nextFilled, 0);
     order.avgFillPrice = nextFilled > 0 ? weightedPrice / nextFilled : 0;
     order.fee += result.fee;
+    order.closeAmount += result.closeAmount;
+    order.closeFee += result.closeFee;
     order.closePnl += result.closePnl;
     order.margin += result.margin;
     order.positionId = order.positionId ?? result.positionId;
@@ -617,6 +625,8 @@ export class PaperBroker {
       price,
       leverage: request.leverage,
       fee,
+      closeAmount: 0,
+      closeFee: 0,
       closePnl: 0,
       margin,
       status,

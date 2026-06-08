@@ -1,8 +1,8 @@
 import { StrictMode, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Archive, CircleDollarSign, History, ListPlus, Send, WalletCards, X } from "lucide-react";
+import { Activity, Archive, BarChart3, CircleDollarSign, History, ListPlus, Send, WalletCards, X } from "lucide-react";
 import { ApiError, api, getAuthToken, setAuthToken } from "./lib/api";
-import type { AccountKind, AccountSnapshot, AmountUnit, Order, OrderType, Paginated, Position, Ticker, TradingAccount } from "./types";
+import type { AccountEquityEvent, AccountKind, AccountSnapshot, AccountStats, AmountUnit, Order, OrderType, Paginated, Position, Ticker, TradingAccount } from "./types";
 import "./styles.css";
 
 const emptyAccount: AccountSnapshot = {
@@ -20,7 +20,7 @@ const emptyAccount: AccountSnapshot = {
 
 const PAGE_SIZE = 10;
 const TAKER_FEE_RATE = 0.0005;
-type ModalView = "history" | "account" | "close" | "risk" | null;
+type ModalView = "history" | "account" | "close" | "risk" | "stats" | null;
 type CloseMode = "partial" | "all";
 type CurrentOrderItem =
   | { kind: "limit"; id: string; order: Order }
@@ -334,6 +334,9 @@ function App() {
         <Metric icon={<Activity />} label="已实现 PnL" value={money(account.realizedPnl)} tone={account.realizedPnl >= 0 ? "up" : "down"} />
         <Metric icon={<Archive />} label="累计手续费" value={money(account.totalFees)} />
       </section>
+      <section className="account-actions">
+        <button className="ghost" onClick={() => setModal("stats")}><BarChart3 size={16} />账户统计</button>
+      </section>
 
       <section className="dashboard">
         <div className="panel market">
@@ -389,6 +392,7 @@ function App() {
       </section>
 
       {modal === "history" && <Modal title="历史明细" onClose={() => setModal(null)}><HistoryDetails accountId={account.accountId} tab={historyTab} setTab={setHistoryTab} /></Modal>}
+      {modal === "stats" && <Modal title="账户统计" onClose={() => setModal(null)}><AccountStatsView accountId={account.accountId} /></Modal>}
       {modal === "account" && <Modal title="新增账户" onClose={() => setModal(null)}><AccountForm name={newAccountName} kind={newAccountKind} cash={newAccountCash} setName={setNewAccountName} setKind={setNewAccountKind} setCash={setNewAccountCash} onSubmit={createAccount} /></Modal>}
       {modal === "close" && closePosition && <Modal title={closeMode === "all" ? "确认一键平仓" : "平仓"} onClose={() => setModal(null)}><ClosePositionForm position={closePosition} amount={closeAmount} percent={closePercent} mode={closeMode} setAmount={updateCloseAmount} setPercent={updateClosePercent} onSubmit={executeClosePosition} /></Modal>}
       {modal === "risk" && riskPosition && <Modal title="止盈止损" onClose={() => setModal(null)}><PositionRiskForm position={riskPosition} takeProfitPrice={takeProfitPrice} stopLossPrice={stopLossPrice} setTakeProfitPrice={setTakeProfitPrice} setStopLossPrice={setStopLossPrice} onSubmit={savePositionRisk} /></Modal>}
@@ -535,6 +539,65 @@ function HistoryDetails({ accountId, tab, setTab }: { accountId: string; tab: "p
     </div>
     {tab === "positions" ? <PositionHistory accountId={accountId} /> : <OrderHistory accountId={accountId} />}
   </>;
+}
+
+function AccountStatsView({ accountId }: { accountId: string }) {
+  const [stats, setStats] = useState<AccountStats | null>(null);
+  useEffect(() => {
+    setStats(null);
+    api.accountStats().then(setStats);
+  }, [accountId]);
+  if (!stats) return <EmptyState text="正在加载账户统计" />;
+  if (stats.totalTrades === 0) return <EmptyState text="暂无平仓事件，完成平仓后会生成统计" />;
+  return <div className="stats-view">
+    <div className="stats-grid">
+      <StatCard label="已结算盈亏" value={money(stats.totalPnl)} tone={stats.totalPnl >= 0 ? "up" : "down"} />
+      <StatCard label="胜率" value={rate(stats.winRate)} />
+      <StatCard label="最大回撤" value={rate(stats.maxDrawdown)} tone={stats.maxDrawdown > 0 ? "down" : undefined} />
+      <StatCard label="手续费占比" value={rate(stats.feeRatio)} />
+    </div>
+    <div className="chart-panel">
+      <div className="chart-title"><strong>资金曲线</strong><span>按平仓事件记录</span></div>
+      <EquityChart events={stats.equityCurve} />
+    </div>
+    <div className="table-scroll stats-table">
+      <table>
+        <thead><tr><th>时间</th><th>交易对</th><th>方向</th><th>平仓数量</th><th>平仓均价</th><th>平仓盈亏</th><th>手续费</th><th>账户权益</th></tr></thead>
+        <tbody>{stats.recentEvents.map((event) => <tr key={event.id}><td>{new Date(event.createdAt).toLocaleString()}</td><td>{event.symbol}</td><td className={event.side === "buy" ? "up" : "down"}>{sideLabel(event.side)}</td><td>{num(event.closeAmount)}</td><td>{money(event.closePrice)}</td><td className={event.closePnl >= 0 ? "up" : "down"}>{money(event.closePnl)}</td><td>{money(event.fee)}</td><td>{money(event.equity)}</td></tr>)}</tbody>
+      </table>
+    </div>
+  </div>;
+}
+
+function StatCard({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return <div className="stat-card"><span>{label}</span><strong className={tone}>{value}</strong></div>;
+}
+
+function EquityChart({ events }: { events: AccountEquityEvent[] }) {
+  const width = 720;
+  const height = 220;
+  const padding = 18;
+  const values = events.map((event) => event.equity);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(max - min, 1);
+  const points = events.map((event, index) => {
+    const x = events.length === 1 ? width / 2 : padding + (index / (events.length - 1)) * (width - padding * 2);
+    const y = height - padding - ((event.equity - min) / span) * (height - padding * 2);
+    return `${x},${y}`;
+  }).join(" ");
+  return <svg className="equity-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="资金曲线">
+    <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} />
+    <line x1={padding} y1={padding} x2={padding} y2={height - padding} />
+    <polyline points={points} />
+    {events.map((event, index) => {
+      const x = events.length === 1 ? width / 2 : padding + (index / (events.length - 1)) * (width - padding * 2);
+      const y = height - padding - ((event.equity - min) / span) * (height - padding * 2);
+      return <circle key={event.id} cx={x} cy={y} r="3"><title>{`${new Date(event.createdAt).toLocaleString()} ${money(event.equity)}`}</title></circle>;
+    })}
+    <text x={padding + 4} y={padding + 4}>{money(max)}</text>
+    <text x={padding + 4} y={height - padding - 6}>{money(min)}</text>
+  </svg>;
 }
 
 function PositionHistory({ accountId }: { accountId: string }) {
