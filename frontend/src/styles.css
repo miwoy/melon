@@ -113,6 +113,7 @@ p {
 
 .account-actions {
   display: flex;
+  gap: 8px;
   justify-content: flex-end;
   max-width: 1440px;
   margin: -4px auto 12px;
@@ -392,6 +393,11 @@ button.ghost {
   color: #d7e3f3;
   border: 1px solid #263445;
   background: #0b1118;
+}
+
+button.ghost.danger {
+  color: #ffb2b2;
+  border-color: #693030;
 }
 
 .icon-button {
@@ -730,6 +736,12 @@ dd {
   min-width: 0;
 }
 
+.confirm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
 .pagination {
   display: flex;
   align-items: center;
@@ -806,12 +818,14 @@ dd {
   }
 
   .account-actions {
-    justify-content: stretch;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     margin: -2px 0 10px;
   }
 
   .account-actions button {
     width: 100%;
+    min-width: 0;
   }
 
   .metric {

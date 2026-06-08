@@ -86,6 +86,32 @@ app.put("/api/accounts/active", async (request, reply) => {
   }
 });
 
+app.patch("/api/accounts/:id/archive", async (request, reply) => {
+  const params = idParamSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: params.error.flatten() });
+  try {
+    const snapshot = await accountManager.archiveAccount(params.data.id);
+    const accounts = await accountManager.list();
+    hub.broadcast({ type: "account", data: snapshot });
+    return { accounts, account: snapshot };
+  } catch (error) {
+    return reply.code(400).send({ error: error instanceof Error ? error.message : "归档账户失败" });
+  }
+});
+
+app.delete("/api/accounts/:id", async (request, reply) => {
+  const params = idParamSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: params.error.flatten() });
+  try {
+    const snapshot = await accountManager.deleteAccount(params.data.id);
+    const accounts = await accountManager.list();
+    hub.broadcast({ type: "account", data: snapshot });
+    return { accounts, account: snapshot };
+  } catch (error) {
+    return reply.code(400).send({ error: error instanceof Error ? error.message : "删除账户失败" });
+  }
+});
+
 app.post("/api/bots/stop", async (request, reply) => {
   try {
     await accountManager.stopBot(accountManager.activeId(), "用户终止机器人", "stopped");

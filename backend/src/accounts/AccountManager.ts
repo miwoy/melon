@@ -21,7 +21,7 @@ export class AccountManager {
   private readonly paperBrokers = new Map<string, PaperBroker>();
 
   async initialize() {
-    const count = await prisma.account.count();
+    const count = await prisma.account.count({ where: { archivedAt: null } });
     if (count === 0) {
       await prisma.account.create({
         data: {
@@ -34,16 +34,22 @@ export class AccountManager {
       });
     }
 
-    const accounts = await prisma.account.findMany({ include: accountInclude });
+    const accounts = await prisma.account.findMany({ where: { archivedAt: null }, include: accountInclude });
     const active = accounts.find((account) => account.isActive) ?? accounts[0];
     this.activeAccountId = active.id;
+    if (!active.isActive) {
+      await prisma.$transaction([
+        prisma.account.updateMany({ data: { isActive: false } }),
+        prisma.account.update({ where: { id: active.id }, data: { isActive: true } })
+      ]);
+    }
     for (const account of accounts) {
       if (account.kind === "paper") this.loadPaperBroker(account);
     }
   }
 
   async list(): Promise<TradingAccount[]> {
-    const accounts = await prisma.account.findMany({ orderBy: { createdAt: "asc" } });
+    const accounts = await prisma.account.findMany({ where: { archivedAt: null }, orderBy: { createdAt: "asc" } });
     return accounts.map((account) => ({
       id: account.id,
       name: account.name,
@@ -83,6 +89,7 @@ export class AccountManager {
   async switch(accountId: string) {
     const account = await prisma.account.findUnique({ where: { id: accountId }, include: accountInclude });
     if (!account) throw new Error("账户不存在");
+    if (account.archivedAt) throw new Error("账户已归档");
     await prisma.$transaction([
       prisma.account.updateMany({ data: { isActive: false } }),
       prisma.account.update({ where: { id: accountId }, data: { isActive: true } })
@@ -99,6 +106,7 @@ export class AccountManager {
   async activeAccount() {
     const account = await prisma.account.findUnique({ where: { id: this.activeAccountId } });
     if (!account) throw new Error("当前账户不存在");
+    if (account.archivedAt) throw new Error("当前账户已归档");
     return account;
   }
 
@@ -109,6 +117,7 @@ export class AccountManager {
   async snapshotFor(accountId: string): Promise<AccountSnapshot> {
     const account = await prisma.account.findUnique({ where: { id: accountId } });
     if (!account) throw new Error("账户不存在");
+    if (account.archivedAt) throw new Error("账户已归档");
     if (account.kind === "paper") {
       const broker = this.paperBrokers.get(account.id);
       if (!broker) throw new Error("模拟账户未加载");
@@ -250,6 +259,7 @@ export class AccountManager {
         kind: "paper",
         mode: "bot",
         botStatus: "running",
+        archivedAt: null,
         botType: { not: null }
       }
     });
@@ -296,6 +306,32 @@ export class AccountManager {
     return account;
   }
 
+  async archiveAccount(accountId: string) {
+    const account = await this.accountForRemoval(accountId);
+    await this.cancelOpenOrders(accountId);
+    await prisma.account.update({
+      where: { id: accountId },
+      data: {
+        archivedAt: new Date(),
+        isActive: false,
+        botStatus: account.mode === "bot" && account.botStatus === "running" ? "stopped" : account.botStatus,
+        stoppedAt: account.mode === "bot" && account.botStatus === "running" ? new Date() : account.stoppedAt,
+        stopReason: account.mode === "bot" && account.botStatus === "running" ? "账户已归档" : account.stopReason
+      }
+    });
+    this.paperBrokers.delete(accountId);
+    if (account.id === this.activeAccountId) await this.activateFallbackAccount(accountId);
+    return this.snapshot();
+  }
+
+  async deleteAccount(accountId: string) {
+    const account = await this.accountForRemoval(accountId);
+    await prisma.account.delete({ where: { id: accountId } });
+    this.paperBrokers.delete(accountId);
+    if (account.id === this.activeAccountId) await this.activateFallbackAccount(accountId);
+    return this.snapshot();
+  }
+
   async persistPaperState(accountId: string) {
     const broker = this.paperBrokers.get(accountId);
     if (!broker) return;
@@ -335,6 +371,38 @@ export class AccountManager {
         }
       }
     });
+  }
+
+  private async accountForRemoval(accountId: string) {
+    const account = await prisma.account.findUnique({ where: { id: accountId } });
+    if (!account || account.archivedAt) throw new Error("账户不存在");
+    const visibleCount = await prisma.account.count({ where: { archivedAt: null } });
+    if (visibleCount <= 1) throw new Error("至少需要保留一个账户");
+    return account;
+  }
+
+  private async activateFallbackAccount(excludedAccountId: string) {
+    const fallback = await prisma.account.findFirst({
+      where: { id: { not: excludedAccountId }, archivedAt: null },
+      orderBy: { createdAt: "asc" },
+      include: accountInclude
+    });
+    if (!fallback) throw new Error("至少需要保留一个账户");
+    await prisma.$transaction([
+      prisma.account.updateMany({ data: { isActive: false } }),
+      prisma.account.update({ where: { id: fallback.id }, data: { isActive: true } })
+    ]);
+    this.activeAccountId = fallback.id;
+    if (fallback.kind === "paper" && !this.paperBrokers.has(fallback.id)) this.loadPaperBroker(fallback);
+  }
+
+  private async cancelOpenOrders(accountId: string) {
+    const broker = this.paperBrokers.get(accountId);
+    if (!broker) return;
+    for (const order of broker.snapshot().orders) {
+      broker.cancelOrder(order.id);
+    }
+    await this.persistPaperState(accountId);
   }
 
   private loadPaperBroker(account: LoadedAccount) {

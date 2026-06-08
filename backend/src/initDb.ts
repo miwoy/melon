@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS "Account" (
   "startedAt" DATETIME,
   "stoppedAt" DATETIME,
   "stopReason" TEXT,
+  "archivedAt" DATETIME,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -33,6 +34,7 @@ await addColumnIfMissing("Account", "botState", "JSONB");
 await addColumnIfMissing("Account", "startedAt", "DATETIME");
 await addColumnIfMissing("Account", "stoppedAt", "DATETIME");
 await addColumnIfMissing("Account", "stopReason", "TEXT");
+await addColumnIfMissing("Account", "archivedAt", "DATETIME");
 await prisma.$executeRawUnsafe(`UPDATE "Account" SET "mode" = COALESCE("mode", 'manual');`);
 
 await prisma.$executeRawUnsafe(`

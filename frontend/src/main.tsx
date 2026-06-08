@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Archive, BarChart3, CircleDollarSign, History, ListPlus, Send, WalletCards, X } from "lucide-react";
+import { Activity, Archive, BarChart3, CircleDollarSign, History, ListPlus, Send, Trash2, WalletCards, X } from "lucide-react";
 import { ApiError, api, getAuthToken, setAuthToken } from "./lib/api";
 import type { AccountEquityEvent, AccountKind, AccountMode, AccountSnapshot, AccountStats, AmountUnit, BotDefinitionMeta, BotStatus, BotType, Order, OrderType, Paginated, Position, RandomBotConfig, Ticker, TradingAccount } from "./types";
 import "./styles.css";
@@ -32,8 +32,9 @@ const defaultRandomBotConfig: RandomBotConfig = {
   maxDrawdownPercent: 0.2,
   entryIntervalSeconds: 30
 };
-type ModalView = "history" | "account" | "close" | "risk" | "stats" | null;
+type ModalView = "history" | "account" | "close" | "risk" | "stats" | "accountAction" | null;
 type CloseMode = "partial" | "all";
+type AccountAction = "archive" | "delete";
 type CurrentOrderItem =
   | { kind: "limit"; id: string; order: Order }
   | { kind: "takeProfit" | "stopLoss"; id: string; position: Position; triggerPrice: number };
@@ -67,6 +68,7 @@ function App() {
   const [riskPosition, setRiskPosition] = useState<Position | null>(null);
   const [takeProfitPrice, setTakeProfitPrice] = useState("");
   const [stopLossPrice, setStopLossPrice] = useState("");
+  const [accountAction, setAccountAction] = useState<AccountAction | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [authorized, setAuthorized] = useState(false);
   const [loginPassword, setLoginPassword] = useState("");
@@ -159,6 +161,7 @@ function App() {
   }, [account.orders, openPositions]);
   const selectedTicker = tickers[selectedSymbol];
   const isBotAccount = account.accountMode === "bot";
+  const canRemoveAccount = accounts.length > 1;
   const referencePrice = orderType === "limit" ? Number(price) : selectedTicker?.last;
   const numericAmount = Number(amount);
   const numericLeverage = Number(leverage);
@@ -320,6 +323,27 @@ function App() {
     }
   }
 
+  function openAccountAction(action: AccountAction) {
+    if (!canRemoveAccount) return;
+    setAccountAction(action);
+    setModal("accountAction");
+  }
+
+  async function executeAccountAction() {
+    if (!accountAction) return;
+    try {
+      const result = accountAction === "archive"
+        ? await api.archiveAccount(account.accountId)
+        : await api.deleteAccount(account.accountId);
+      setAccounts(result.accounts);
+      setAccount(result.account);
+      setAccountAction(null);
+      setModal(null);
+    } catch (error) {
+      handleAuthError(error);
+    }
+  }
+
   async function login(event: FormEvent) {
     event.preventDefault();
     setLoginError("");
@@ -369,6 +393,8 @@ function App() {
       </section>
       <section className="account-actions">
         <button className="ghost" onClick={() => setModal("stats")}><BarChart3 size={16} />账户统计</button>
+        <button className="ghost" disabled={!canRemoveAccount} onClick={() => openAccountAction("archive")}><Archive size={16} />归档账户</button>
+        <button className="ghost danger" disabled={!canRemoveAccount} onClick={() => openAccountAction("delete")}><Trash2 size={16} />删除账户</button>
       </section>
 
       <section className="dashboard">
@@ -429,6 +455,7 @@ function App() {
       {modal === "history" && <Modal title="历史明细" onClose={() => setModal(null)}><HistoryDetails accountId={account.accountId} tab={historyTab} setTab={setHistoryTab} /></Modal>}
       {modal === "stats" && <Modal title="账户统计" onClose={() => setModal(null)}><AccountStatsView accountId={account.accountId} /></Modal>}
       {modal === "account" && <Modal title="新增账户" onClose={() => setModal(null)}><AccountForm name={newAccountName} kind={newAccountKind} mode={newAccountMode} botType={newBotType} botConfig={newBotConfig} botDefinitions={botDefinitions} symbols={symbols} cash={newAccountCash} setName={setNewAccountName} setKind={setNewAccountKind} setMode={setNewAccountMode} setBotType={setNewBotType} setBotConfig={setNewBotConfig} setCash={setNewAccountCash} onSubmit={createAccount} /></Modal>}
+      {modal === "accountAction" && accountAction && <Modal title={accountAction === "archive" ? "确认归档账户" : "确认删除账户"} onClose={() => { setAccountAction(null); setModal(null); }}><ConfirmAccountAction action={accountAction} account={account} onSubmit={executeAccountAction} onCancel={() => { setAccountAction(null); setModal(null); }} /></Modal>}
       {modal === "close" && closePosition && <Modal title={closeMode === "all" ? "确认一键平仓" : "平仓"} onClose={() => setModal(null)}><ClosePositionForm position={closePosition} amount={closeAmount} percent={closePercent} mode={closeMode} setAmount={updateCloseAmount} setPercent={updateClosePercent} onSubmit={executeClosePosition} /></Modal>}
       {modal === "risk" && riskPosition && <Modal title="止盈止损" onClose={() => setModal(null)}><PositionRiskForm position={riskPosition} takeProfitPrice={takeProfitPrice} stopLossPrice={stopLossPrice} setTakeProfitPrice={setTakeProfitPrice} setStopLossPrice={setStopLossPrice} onSubmit={savePositionRisk} /></Modal>}
     </main>
@@ -547,6 +574,21 @@ function PositionRiskForm({
     <label>止损价<input className={stopLossInvalid ? "invalid" : ""} value={stopLossPrice} onChange={(event) => setStopLossPrice(event.target.value)} inputMode="decimal" placeholder="留空表示不设置" /></label>
     {(takeProfitInvalid || stopLossInvalid) && <div className="trade-error">价格必须大于 0，或留空取消设置</div>}
     <button className="neutral" disabled={takeProfitInvalid || stopLossInvalid} onClick={onSubmit}>保存止盈止损</button>
+  </div>;
+}
+
+function ConfirmAccountAction({ action, account, onSubmit, onCancel }: { action: AccountAction; account: AccountSnapshot; onSubmit: () => void; onCancel: () => void }) {
+  const isDelete = action === "delete";
+  return <div className="modal-form">
+    <div className="confirm-box">
+      {isDelete
+        ? `删除账户「${account.accountName}」后，该账户的仓位、订单和账户统计会一起删除，无法在系统内恢复。`
+        : `归档账户「${account.accountName}」后，它会从账户列表中隐藏，机器人也会停止运行。账户数据会保留在数据库中。`}
+    </div>
+    <div className="confirm-actions">
+      <button className="neutral ghost" onClick={onCancel}>取消</button>
+      <button className={isDelete ? "sell" : "neutral"} onClick={onSubmit}>{isDelete ? "确认删除" : "确认归档"}</button>
+    </div>
   </div>;
 }
 

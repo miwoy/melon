@@ -43,6 +43,10 @@ export const api = {
   accounts: () => fetchJson<TradingAccount[]>("/api/accounts"),
   createAccount: (payload: { name: string; kind: AccountKind; mode?: AccountMode; botType?: BotType; botConfig?: RandomBotConfig; startingCash?: number }) =>
     fetchJson<TradingAccount>("/api/accounts", { method: "POST", body: JSON.stringify(payload) }),
+  archiveAccount: (accountId: string) =>
+    fetchJson<{ accounts: TradingAccount[]; account: AccountSnapshot }>(`/api/accounts/${accountId}/archive`, { method: "PATCH", body: JSON.stringify({ confirm: true }) }),
+  deleteAccount: (accountId: string) =>
+    fetchJson<{ accounts: TradingAccount[]; account: AccountSnapshot }>(`/api/accounts/${accountId}`, { method: "DELETE", body: JSON.stringify({ confirm: true }) }),
   stopBot: () => fetchJson<AccountSnapshot>("/api/bots/stop", { method: "POST" }),
   switchAccount: (accountId: string) =>
     fetchJson<AccountSnapshot>("/api/accounts/active", { method: "PUT", body: JSON.stringify({ accountId }) }),

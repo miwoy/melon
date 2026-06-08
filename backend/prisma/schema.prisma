@@ -23,6 +23,7 @@ model Account {
   startedAt   DateTime?
   stoppedAt   DateTime?
   stopReason  String?
+  archivedAt  DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   positions   Position[]
