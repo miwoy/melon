@@ -427,7 +427,7 @@ button.ghost {
 
 .position-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-top: 12px;
 }
@@ -470,6 +470,22 @@ dd {
   flex-direction: column;
   border-bottom: 1px solid #1b2734;
   padding: 0 0 9px;
+}
+
+.order-item button {
+  align-self: stretch;
+  height: 32px;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border: 1px solid #263445;
+  border-radius: 6px;
+  padding: 0 7px;
+  color: #7db4ff;
+  background: #0b1118;
 }
 
 .order-item:last-child {

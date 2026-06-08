@@ -29,6 +29,8 @@ export type Position = {
   markPrice: number;
   marketValue: number;
   liquidationPrice: number;
+  takeProfitPrice?: number;
+  stopLossPrice?: number;
   leverage: number;
   margin: number;
   openedMargin: number;
@@ -90,6 +92,12 @@ export type CreateOrderRequest = {
   leverage: number;
   amountUnit?: AmountUnit;
   accountId?: string;
+};
+
+export type UpdatePositionRiskRequest = {
+  positionId: string;
+  takeProfitPrice?: number | null;
+  stopLossPrice?: number | null;
 };
 
 export type StrategyConfig = {

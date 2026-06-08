@@ -105,6 +105,7 @@ export class PaperBroker {
       this.applyOrderFill(order, result);
       changed.push(order);
     }
+    changed.push(...this.triggerPositionRiskOrders(ticker.symbol));
     changed.push(...this.liquidateRiskyPositions());
     return changed;
   }
@@ -129,6 +130,23 @@ export class PaperBroker {
       return this.reject(request, "暂无可用行情价格");
     }
     return this.fill(request, ticker.last, this.feeRates.taker);
+  }
+
+  cancelOrder(orderId: string): Order | null {
+    const order = this.orders.find((item) => item.id === orderId);
+    if (!order || order.type !== "limit" || !["open", "partial"].includes(order.status)) return null;
+    order.status = "canceled";
+    order.reason = "用户取消委托";
+    changedTimestamp(order);
+    return order;
+  }
+
+  updatePositionRisk(positionId: string, input: { takeProfitPrice?: number | null; stopLossPrice?: number | null }) {
+    const position = [...this.positions.values()].find((item) => item.id === positionId);
+    if (!position) return null;
+    position.takeProfitPrice = positiveOrUndefined(input.takeProfitPrice);
+    position.stopLossPrice = positiveOrUndefined(input.stopLossPrice);
+    return position;
   }
 
   snapshot(): AccountSnapshot {
@@ -176,6 +194,8 @@ export class PaperBroker {
         avgEntry: position.avgEntry,
         markPrice: position.markPrice,
         marketValue: position.marketValue,
+        takeProfitPrice: position.takeProfitPrice,
+        stopLossPrice: position.stopLossPrice,
         leverage: position.leverage,
         margin: position.margin,
         openedMargin: position.openedMargin,
@@ -329,6 +349,8 @@ export class PaperBroker {
       markPrice: price,
       marketValue: 0,
       liquidationPrice: 0,
+      takeProfitPrice: undefined,
+      stopLossPrice: undefined,
       leverage,
       margin: 0,
       openedMargin: 0,
@@ -349,6 +371,8 @@ export class PaperBroker {
     position.margin = 0;
     position.marketValue = 0;
     position.unrealizedPnl = 0;
+    position.takeProfitPrice = undefined;
+    position.stopLossPrice = undefined;
     position.markPrice = price;
     position.closedAt = position.closedAt ?? Date.now();
     this.recalculate(position);
@@ -455,13 +479,35 @@ export class PaperBroker {
     return changed;
   }
 
+  private triggerPositionRiskOrders(symbol: string) {
+    const changed: Order[] = [];
+    const position = this.positions.get(symbol);
+    if (!position || position.status !== "open" || position.amount <= 0) return changed;
+    const reason = this.positionRiskTriggerReason(position);
+    if (!reason) return changed;
+    const order = this.forceClosePosition(position, reason);
+    changed.push(order, ...this.cancelOpenLimitOrders(symbol, `${reason}后自动取消未成交委托`));
+    return changed;
+  }
+
+  private positionRiskTriggerReason(position: InternalPosition) {
+    if (position.side === "long") {
+      if (position.takeProfitPrice && position.markPrice >= position.takeProfitPrice) return "止盈触发";
+      if (position.stopLossPrice && position.markPrice <= position.stopLossPrice) return "止损触发";
+      return "";
+    }
+    if (position.takeProfitPrice && position.markPrice <= position.takeProfitPrice) return "止盈触发";
+    if (position.stopLossPrice && position.markPrice >= position.stopLossPrice) return "止损触发";
+    return "";
+  }
+
   private shouldLiquidate(position: InternalPosition, activePositions: InternalPosition[], walletBalance: number) {
     const price = this.liquidationPrice(position, activePositions, walletBalance);
     if (price <= 0 || position.markPrice <= 0) return false;
     return position.side === "long" ? position.markPrice <= price : position.markPrice >= price;
   }
 
-  private forceClosePosition(position: InternalPosition) {
+  private forceClosePosition(position: InternalPosition, reason = "爆仓强平") {
     const amount = position.amount;
     const price = position.markPrice;
     const side = position.side === "long" ? "sell" : "buy";
@@ -487,17 +533,17 @@ export class PaperBroker {
     order.filledAmount = amount;
     order.remainingAmount = 0;
     order.avgFillPrice = price;
-    order.reason = "爆仓强平";
+    order.reason = reason;
     this.pushOrder(order);
     return order;
   }
 
-  private cancelOpenLimitOrders(symbol: string) {
+  private cancelOpenLimitOrders(symbol: string, reason = "爆仓后自动取消未成交委托") {
     const changed: Order[] = [];
     for (const order of this.orders) {
       if (order.symbol !== symbol || order.type !== "limit" || !["open", "partial"].includes(order.status)) continue;
       order.status = "canceled";
-      order.reason = "爆仓后自动取消未成交委托";
+      order.reason = reason;
       changedTimestamp(order);
       changed.push(order);
     }
@@ -578,4 +624,8 @@ function changedTimestamp(order: Order) {
 
 function isClose(left: number, right: number) {
   return Math.abs(left - right) < 1e-8;
+}
+
+function positiveOrUndefined(value?: number | null) {
+  return value && Number.isFinite(value) && value > 0 ? value : undefined;
 }

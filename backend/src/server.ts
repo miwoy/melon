@@ -7,7 +7,7 @@ import { config } from "./config.js";
 import { prisma } from "./db.js";
 import { BinanceExchange } from "./exchange/BinanceExchange.js";
 import { BinanceMarketStream } from "./market/BinanceMarketStream.js";
-import { createAccountSchema, createOrderSchema, loginSchema, paginationSchema, switchAccountSchema } from "./schemas.js";
+import { createAccountSchema, createOrderSchema, idParamSchema, loginSchema, paginationSchema, positionRiskSchema, switchAccountSchema } from "./schemas.js";
 import type { CreateOrderRequest, Ticker } from "./types.js";
 import { EventHub } from "./ws/EventHub.js";
 
@@ -88,6 +88,33 @@ app.post("/api/orders", async (request, reply) => {
 
   const order = await submitOrder(parsed.data);
   return order;
+});
+
+app.delete("/api/orders/:id", async (request, reply) => {
+  const parsed = idParamSchema.safeParse(request.params);
+  if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+  try {
+    const order = await accountManager.cancelPaperOrder(parsed.data.id);
+    hub.broadcast({ type: "order", data: order });
+    hub.broadcast({ type: "account", data: await accountManager.snapshot() });
+    return order;
+  } catch (error) {
+    return reply.code(404).send({ error: error instanceof Error ? error.message : "取消委托失败" });
+  }
+});
+
+app.patch("/api/positions/:id/risk", async (request, reply) => {
+  const params = idParamSchema.safeParse(request.params);
+  const body = positionRiskSchema.safeParse(request.body);
+  if (!params.success) return reply.code(400).send({ error: params.error.flatten() });
+  if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+  try {
+    const snapshot = await accountManager.updatePaperPositionRisk({ positionId: params.data.id, ...body.data });
+    hub.broadcast({ type: "account", data: snapshot });
+    return snapshot;
+  } catch (error) {
+    return reply.code(404).send({ error: error instanceof Error ? error.message : "设置止盈止损失败" });
+  }
 });
 
 app.get("/ws", { websocket: true }, (socket, request) => {

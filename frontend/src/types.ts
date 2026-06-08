@@ -29,6 +29,8 @@ export type Position = {
   markPrice: number;
   marketValue: number;
   liquidationPrice: number;
+  takeProfitPrice?: number;
+  stopLossPrice?: number;
   leverage: number;
   margin: number;
   openedMargin: number;

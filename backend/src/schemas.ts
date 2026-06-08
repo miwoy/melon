@@ -32,3 +32,12 @@ export const createAccountSchema = z.object({
 export const switchAccountSchema = z.object({
   accountId: z.string().min(1)
 });
+
+export const positionRiskSchema = z.object({
+  takeProfitPrice: z.number().positive().nullable().optional(),
+  stopLossPrice: z.number().positive().nullable().optional()
+});
+
+export const idParamSchema = z.object({
+  id: z.string().min(1)
+});

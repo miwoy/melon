@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS "Position" (
   "avgEntry" REAL NOT NULL,
   "markPrice" REAL NOT NULL,
   "marketValue" REAL NOT NULL,
+  "takeProfitPrice" REAL,
+  "stopLossPrice" REAL,
   "leverage" INTEGER NOT NULL,
   "margin" REAL NOT NULL,
   "openedMargin" REAL NOT NULL DEFAULT 0,
@@ -51,6 +53,8 @@ CREATE TABLE IF NOT EXISTS "Position" (
 await addColumnIfMissing("Position", "status", "TEXT NOT NULL DEFAULT 'open'");
 await addColumnIfMissing("Position", "openedAmount", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Position", "closedAmount", "REAL NOT NULL DEFAULT 0");
+await addColumnIfMissing("Position", "takeProfitPrice", "REAL");
+await addColumnIfMissing("Position", "stopLossPrice", "REAL");
 await addColumnIfMissing("Position", "openedMargin", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Position", "realizedPnl", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Position", "fees", "REAL NOT NULL DEFAULT 0");

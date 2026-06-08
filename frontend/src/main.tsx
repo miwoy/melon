@@ -20,8 +20,11 @@ const emptyAccount: AccountSnapshot = {
 
 const PAGE_SIZE = 10;
 const TAKER_FEE_RATE = 0.0005;
-type ModalView = "history" | "account" | "close" | null;
+type ModalView = "history" | "account" | "close" | "risk" | null;
 type CloseMode = "partial" | "all";
+type CurrentOrderItem =
+  | { kind: "limit"; id: string; order: Order }
+  | { kind: "takeProfit" | "stopLoss"; id: string; position: Position; triggerPrice: number };
 
 function App() {
   const [symbols, setSymbols] = useState<string[]>([]);
@@ -45,6 +48,9 @@ function App() {
   const [closeAmount, setCloseAmount] = useState("");
   const [closePercent, setClosePercent] = useState(100);
   const [closeMode, setCloseMode] = useState<CloseMode>("partial");
+  const [riskPosition, setRiskPosition] = useState<Position | null>(null);
+  const [takeProfitPrice, setTakeProfitPrice] = useState("");
+  const [stopLossPrice, setStopLossPrice] = useState("");
   const [authReady, setAuthReady] = useState(false);
   const [authorized, setAuthorized] = useState(false);
   const [loginPassword, setLoginPassword] = useState("");
@@ -122,10 +128,16 @@ function App() {
 
   const tickerRows = useMemo(() => Object.values(tickers).sort((a, b) => a.symbol.localeCompare(b.symbol)), [tickers]);
   const openPositions = useMemo(() => account.positions.filter((position) => position.status === "open"), [account.positions]);
-  const currentOrders = useMemo(
-    () => account.orders.filter((order) => order.type === "limit" && ["open", "partial"].includes(order.status)).slice(0, 6),
-    [account.orders]
-  );
+  const currentOrders = useMemo<CurrentOrderItem[]>(() => {
+    const limitItems: CurrentOrderItem[] = account.orders
+      .filter((order) => order.type === "limit" && ["open", "partial"].includes(order.status))
+      .map((order) => ({ kind: "limit", id: order.id, order }));
+    const riskItems = openPositions.flatMap((position): CurrentOrderItem[] => [
+      ...(position.takeProfitPrice ? [{ kind: "takeProfit" as const, id: `${position.id}-take-profit`, position, triggerPrice: position.takeProfitPrice }] : []),
+      ...(position.stopLossPrice ? [{ kind: "stopLoss" as const, id: `${position.id}-stop-loss`, position, triggerPrice: position.stopLossPrice }] : [])
+    ]);
+    return [...limitItems, ...riskItems].slice(0, 8);
+  }, [account.orders, openPositions]);
   const selectedTicker = tickers[selectedSymbol];
   const referencePrice = orderType === "limit" ? Number(price) : selectedTicker?.last;
   const numericAmount = Number(amount);
@@ -201,6 +213,13 @@ function App() {
     setModal("close");
   }
 
+  function openRiskModal(position: Position) {
+    setRiskPosition(position);
+    setTakeProfitPrice(position.takeProfitPrice ? formatAmountInput(position.takeProfitPrice) : "");
+    setStopLossPrice(position.stopLossPrice ? formatAmountInput(position.stopLossPrice) : "");
+    setModal("risk");
+  }
+
   function updateCloseAmount(value: string) {
     setCloseAmount(value);
     const nextAmount = Number(value);
@@ -232,6 +251,37 @@ function App() {
       setAccount(await api.account());
       setModal(null);
       setClosePosition(null);
+    } catch (error) {
+      handleAuthError(error);
+    }
+  }
+
+  async function savePositionRisk() {
+    if (!riskPosition) return;
+    try {
+      const snapshot = await api.updatePositionRisk(riskPosition.id, {
+        takeProfitPrice: parseOptionalPositive(takeProfitPrice),
+        stopLossPrice: parseOptionalPositive(stopLossPrice)
+      });
+      setAccount(snapshot);
+      setModal(null);
+      setRiskPosition(null);
+    } catch (error) {
+      handleAuthError(error);
+    }
+  }
+
+  async function cancelCurrentOrder(item: CurrentOrderItem) {
+    try {
+      if (item.kind === "limit") {
+        await api.cancelOrder(item.order.id);
+      } else {
+        await api.updatePositionRisk(item.position.id, {
+          takeProfitPrice: item.kind === "takeProfit" ? null : item.position.takeProfitPrice ?? null,
+          stopLossPrice: item.kind === "stopLoss" ? null : item.position.stopLossPrice ?? null
+        });
+      }
+      setAccount(await api.account());
     } catch (error) {
       handleAuthError(error);
     }
@@ -333,14 +383,15 @@ function App() {
             <button className="icon-button compact" onClick={() => { setHistoryTab(portfolioTab); setModal("history"); }} title="历史明细"><History size={17} /></button>
           </div>
           {portfolioTab === "positions"
-            ? openPositions.length === 0 ? <EmptyState text="暂无持仓中仓位" /> : <PositionCards positions={openPositions} onClose={(position) => openCloseModal(position, "partial")} onCloseAll={(position) => openCloseModal(position, "all")} />
-            : currentOrders.length === 0 ? <EmptyState text="暂无未完全成交的限价单" /> : <OpenOrderList orders={currentOrders} />}
+            ? openPositions.length === 0 ? <EmptyState text="暂无持仓中仓位" /> : <PositionCards positions={openPositions} onRisk={openRiskModal} onClose={(position) => openCloseModal(position, "partial")} onCloseAll={(position) => openCloseModal(position, "all")} />
+            : currentOrders.length === 0 ? <EmptyState text="暂无当前委托" /> : <OpenOrderList items={currentOrders} onCancel={cancelCurrentOrder} />}
         </div>
       </section>
 
       {modal === "history" && <Modal title="历史明细" onClose={() => setModal(null)}><HistoryDetails accountId={account.accountId} tab={historyTab} setTab={setHistoryTab} /></Modal>}
       {modal === "account" && <Modal title="新增账户" onClose={() => setModal(null)}><AccountForm name={newAccountName} kind={newAccountKind} cash={newAccountCash} setName={setNewAccountName} setKind={setNewAccountKind} setCash={setNewAccountCash} onSubmit={createAccount} /></Modal>}
       {modal === "close" && closePosition && <Modal title={closeMode === "all" ? "确认一键平仓" : "平仓"} onClose={() => setModal(null)}><ClosePositionForm position={closePosition} amount={closeAmount} percent={closePercent} mode={closeMode} setAmount={updateCloseAmount} setPercent={updateClosePercent} onSubmit={executeClosePosition} /></Modal>}
+      {modal === "risk" && riskPosition && <Modal title="止盈止损" onClose={() => setModal(null)}><PositionRiskForm position={riskPosition} takeProfitPrice={takeProfitPrice} stopLossPrice={stopLossPrice} setTakeProfitPrice={setTakeProfitPrice} setStopLossPrice={setStopLossPrice} onSubmit={savePositionRisk} /></Modal>}
     </main>
   );
 }
@@ -353,7 +404,7 @@ function PanelHeader({ title, actionLabel, onAction }: { title: string; actionLa
   return <div className="panel-header"><h2>{title}</h2>{actionLabel && <button className="text-button" onClick={onAction}>{actionLabel}</button>}</div>;
 }
 
-function PositionCards({ positions, onClose, onCloseAll }: { positions: Position[]; onClose: (position: Position) => void; onCloseAll: (position: Position) => void }) {
+function PositionCards({ positions, onRisk, onClose, onCloseAll }: { positions: Position[]; onRisk: (position: Position) => void; onClose: (position: Position) => void; onCloseAll: (position: Position) => void }) {
   return <div className="position-cards">{positions.map((p) => {
     const avgChange = positionAvgChange(p);
     return <article className="position-card" key={p.id}>
@@ -370,9 +421,12 @@ function PositionCards({ positions, onClose, onCloseAll }: { positions: Position
         <div><dt>保证金占用</dt><dd>{money(p.margin)}</dd></div>
         <div><dt>仓位价值</dt><dd>{money(p.marketValue)}</dd></div>
         <div><dt>爆仓价</dt><dd>{p.liquidationPrice > 0 ? money(p.liquidationPrice) : "-"}</dd></div>
+        <div><dt>止盈价</dt><dd>{p.takeProfitPrice ? money(p.takeProfitPrice) : "-"}</dd></div>
+        <div><dt>止损价</dt><dd>{p.stopLossPrice ? money(p.stopLossPrice) : "-"}</dd></div>
         <div><dt>均价涨跌</dt><dd className={avgChange >= 0 ? "up" : "down"}>{rate(avgChange)}</dd></div>
       </dl>
       <div className="position-actions">
+        <button className="neutral ghost" onClick={() => onRisk(p)}>止盈止损</button>
         <button className="neutral ghost" onClick={() => onClose(p)}>平仓</button>
         <button className="sell" onClick={() => onCloseAll(p)}>一键平仓</button>
       </div>
@@ -380,8 +434,55 @@ function PositionCards({ positions, onClose, onCloseAll }: { positions: Position
   })}</div>;
 }
 
-function OpenOrderList({ orders }: { orders: Order[] }) {
-  return <div className="order-list">{orders.map((order) => <div className="order-item" key={order.id}><div><strong>{order.symbol}</strong><span>{new Date(order.createdAt).toLocaleTimeString()}</span></div><div><span className={order.side === "buy" ? "up" : "down"}>{sideLabel(order.side)}</span><span>限价 · {order.leverage}x · {statusLabel(order.status)}</span></div><div><span>委托价 {money(order.price)}</span><span>已成交 {num(order.filledAmount)}</span></div><div><span>委托 {num(order.amount)}</span><span>剩余 {num(order.remainingAmount)}</span></div></div>)}</div>;
+function OpenOrderList({ items, onCancel }: { items: CurrentOrderItem[]; onCancel: (item: CurrentOrderItem) => void }) {
+  return <div className="order-list">{items.map((item) => {
+    if (item.kind === "limit") {
+      const order = item.order;
+      return <div className="order-item" key={item.id}>
+        <div><strong>{order.symbol}</strong><span className="tag">限价委托</span></div>
+        <div><span className={order.side === "buy" ? "up" : "down"}>{sideLabel(order.side)}</span><span>{order.leverage}x · {statusLabel(order.status)}</span></div>
+        <div><span>委托价 {money(order.price)}</span><span>已成交 {num(order.filledAmount)}</span></div>
+        <div><span>委托 {num(order.amount)}</span><span>剩余 {num(order.remainingAmount)}</span></div>
+        <button className="neutral ghost" onClick={() => onCancel(item)}>取消委托</button>
+      </div>;
+    }
+    const position = item.position;
+    return <div className="order-item" key={item.id}>
+      <div><strong>{position.symbol}</strong><span className="tag">止盈止损</span></div>
+      <div><span className={item.kind === "takeProfit" ? "up" : "down"}>{item.kind === "takeProfit" ? "止盈" : "止损"}</span><span>{positionSideLabel(position.side)} · {position.leverage}x</span></div>
+      <div><span>触发价 {money(item.triggerPrice)}</span><span>可平 {num(position.amount)}</span></div>
+      <button className="neutral ghost" onClick={() => onCancel(item)}>取消设置</button>
+    </div>;
+  })}</div>;
+}
+
+function PositionRiskForm({
+  position,
+  takeProfitPrice,
+  stopLossPrice,
+  setTakeProfitPrice,
+  setStopLossPrice,
+  onSubmit
+}: {
+  position: Position;
+  takeProfitPrice: string;
+  stopLossPrice: string;
+  setTakeProfitPrice: (value: string) => void;
+  setStopLossPrice: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  const takeProfit = Number(takeProfitPrice);
+  const stopLoss = Number(stopLossPrice);
+  const takeProfitInvalid = takeProfitPrice !== "" && (!Number.isFinite(takeProfit) || takeProfit <= 0);
+  const stopLossInvalid = stopLossPrice !== "" && (!Number.isFinite(stopLoss) || stopLoss <= 0);
+  const sideHint = position.side === "long" ? "多头：止盈价通常高于均价，止损价通常低于均价" : "空头：止盈价通常低于均价，止损价通常高于均价";
+  return <div className="modal-form">
+    <div className="confirm-box">{position.symbol} · {positionSideLabel(position.side)} · 均价 {money(position.avgEntry)}。{sideHint}</div>
+    <label>止盈价<input className={takeProfitInvalid ? "invalid" : ""} value={takeProfitPrice} onChange={(event) => setTakeProfitPrice(event.target.value)} inputMode="decimal" placeholder="留空表示不设置" /></label>
+    <label>止损价<input className={stopLossInvalid ? "invalid" : ""} value={stopLossPrice} onChange={(event) => setStopLossPrice(event.target.value)} inputMode="decimal" placeholder="留空表示不设置" /></label>
+    {(takeProfitInvalid || stopLossInvalid) && <div className="trade-error">价格必须大于 0，或留空取消设置</div>}
+    <button className="neutral" disabled={takeProfitInvalid || stopLossInvalid} onClick={onSubmit}>保存止盈止损</button>
+  </div>;
 }
 
 function ClosePositionForm({
@@ -569,6 +670,12 @@ function formatAmountInput(value: number) {
 function clampPercent(value: number) {
   if (!Number.isFinite(value)) return 0;
   return Math.min(Math.max(value, 0), 100);
+}
+
+function parseOptionalPositive(value: string) {
+  if (value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);

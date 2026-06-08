@@ -36,6 +36,8 @@ model Position {
   avgEntry      Float
   markPrice     Float
   marketValue   Float
+  takeProfitPrice Float?
+  stopLossPrice Float?
   leverage      Int
   margin        Float
   openedMargin  Float   @default(0)

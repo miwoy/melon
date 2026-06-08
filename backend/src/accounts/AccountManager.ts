@@ -2,7 +2,7 @@ import type { Account, Order as DbOrder, Position as DbPosition } from "@prisma/
 import { config } from "../config.js";
 import { prisma } from "../db.js";
 import { PaperBroker } from "../broker/PaperBroker.js";
-import type { AccountKind, AccountSnapshot, CreateOrderRequest, Order, Paginated, Position, Ticker, TradingAccount } from "../types.js";
+import type { AccountKind, AccountSnapshot, CreateOrderRequest, Order, Paginated, Position, Ticker, TradingAccount, UpdatePositionRiskRequest } from "../types.js";
 
 type LoadedAccount = Account & {
   positions: DbPosition[];
@@ -171,6 +171,24 @@ export class AccountManager {
     return order;
   }
 
+  async cancelPaperOrder(orderId: string) {
+    const broker = this.paperBrokers.get(this.activeAccountId);
+    if (!broker) throw new Error("模拟账户不存在");
+    const order = broker.cancelOrder(orderId);
+    if (!order) throw new Error("委托不存在或不可取消");
+    await this.persistPaperState(order.accountId);
+    return order;
+  }
+
+  async updatePaperPositionRisk(input: UpdatePositionRiskRequest) {
+    const broker = this.paperBrokers.get(this.activeAccountId);
+    if (!broker) throw new Error("模拟账户不存在");
+    const position = broker.updatePositionRisk(input.positionId, input);
+    if (!position) throw new Error("仓位不存在");
+    await this.persistPaperState(this.activeAccountId);
+    return this.snapshot();
+  }
+
   async persistPaperState(accountId: string) {
     const broker = this.paperBrokers.get(accountId);
     if (!broker) return;
@@ -229,6 +247,8 @@ export class AccountManager {
           markPrice: position.markPrice,
           marketValue: position.marketValue,
           liquidationPrice: 0,
+          takeProfitPrice: position.takeProfitPrice ?? undefined,
+          stopLossPrice: position.stopLossPrice ?? undefined,
           leverage: position.leverage,
           margin: position.margin,
           openedMargin: position.openedMargin || position.margin,
@@ -319,6 +339,8 @@ function deserializePosition(position: DbPosition): Position {
     markPrice: position.markPrice,
     marketValue: position.marketValue,
     liquidationPrice: 0,
+    takeProfitPrice: position.takeProfitPrice ?? undefined,
+    stopLossPrice: position.stopLossPrice ?? undefined,
     leverage: position.leverage,
     margin: position.margin,
     openedMargin: position.openedMargin,

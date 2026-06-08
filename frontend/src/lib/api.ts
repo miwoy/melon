@@ -48,6 +48,9 @@ export const api = {
   account: () => fetchJson<AccountSnapshot>("/api/account"),
   orders: (page: number, pageSize: number) => fetchJson<Paginated<Order>>(`/api/orders/history?page=${page}&pageSize=${pageSize}`),
   positionHistory: (page: number, pageSize: number) => fetchJson<Paginated<Position>>(`/api/positions/history?page=${page}&pageSize=${pageSize}`),
+  updatePositionRisk: (positionId: string, payload: { takeProfitPrice?: number | null; stopLossPrice?: number | null }) =>
+    fetchJson<AccountSnapshot>(`/api/positions/${positionId}/risk`, { method: "PATCH", body: JSON.stringify(payload) }),
+  cancelOrder: (orderId: string) => fetchJson<Order>(`/api/orders/${orderId}`, { method: "DELETE" }),
   order: (payload: { symbol: string; side: OrderSide; type: OrderType; amount: number; amountUnit: AmountUnit; price?: number; leverage: number }) =>
     fetchJson<Order>("/api/orders", {
       method: "POST",
