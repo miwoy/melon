@@ -23,13 +23,13 @@ export function getAuthToken() {
 }
 
 export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  if (authToken) headers.set("authorization", `Bearer ${authToken}`);
+
   const response = await fetch(url, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
-      ...init?.headers
-    }
+    headers
   });
   if (!response.ok) throw new ApiError(response.status, await response.text());
   return response.json() as Promise<T>;
