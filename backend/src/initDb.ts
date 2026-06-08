@@ -12,10 +12,28 @@ CREATE TABLE IF NOT EXISTS "Account" (
   "realizedPnl" REAL NOT NULL DEFAULT 0,
   "totalFees" REAL NOT NULL DEFAULT 0,
   "isActive" BOOLEAN NOT NULL DEFAULT false,
+  "mode" TEXT NOT NULL DEFAULT 'manual',
+  "botType" TEXT,
+  "botStatus" TEXT,
+  "botConfig" JSONB,
+  "botState" JSONB,
+  "startedAt" DATETIME,
+  "stoppedAt" DATETIME,
+  "stopReason" TEXT,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `);
+
+await addColumnIfMissing("Account", "mode", "TEXT NOT NULL DEFAULT 'manual'");
+await addColumnIfMissing("Account", "botType", "TEXT");
+await addColumnIfMissing("Account", "botStatus", "TEXT");
+await addColumnIfMissing("Account", "botConfig", "JSONB");
+await addColumnIfMissing("Account", "botState", "JSONB");
+await addColumnIfMissing("Account", "startedAt", "DATETIME");
+await addColumnIfMissing("Account", "stoppedAt", "DATETIME");
+await addColumnIfMissing("Account", "stopReason", "TEXT");
+await prisma.$executeRawUnsafe(`UPDATE "Account" SET "mode" = COALESCE("mode", 'manual');`);
 
 await prisma.$executeRawUnsafe(`
 CREATE TABLE IF NOT EXISTS "Position" (

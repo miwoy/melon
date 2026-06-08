@@ -26,7 +26,31 @@ export const paginationSchema = z.object({
 export const createAccountSchema = z.object({
   name: z.string().min(1).max(40),
   kind: z.enum(["paper", "live"]),
+  mode: z.enum(["manual", "bot"]).default("manual"),
+  botType: z.enum(["random"]).optional(),
+  botConfig: z.object({
+    symbol: z.string().min(3),
+    direction: z.enum(["long", "short", "both"]),
+    amount: z.number().positive(),
+    amountUnit: z.enum(["base", "quote"]),
+    leverage: z.number().int().min(1).max(125),
+    takeProfitPercent: z.number().positive(),
+    stopLossPercent: z.number().positive(),
+    maxDrawdownPercent: z.number().positive(),
+    entryIntervalSeconds: z.number().int().min(0)
+  }).optional(),
   startingCash: z.number().positive().optional()
+}).superRefine((account, ctx) => {
+  if (account.mode === "manual") return;
+  if (account.kind !== "paper") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "第一版仅支持模拟机器人账户", path: ["kind"] });
+  }
+  if (!account.botType) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "机器人账户必须选择机器人类型", path: ["botType"] });
+  }
+  if (!account.botConfig) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "机器人账户必须填写机器人参数", path: ["botConfig"] });
+  }
 });
 
 export const switchAccountSchema = z.object({

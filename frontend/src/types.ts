@@ -5,6 +5,9 @@ export type AmountUnit = "base" | "quote";
 export type OrderStatus = "open" | "partial" | "filled" | "rejected" | "canceled";
 export type PositionSide = "long" | "short";
 export type PositionStatus = "open" | "closed";
+export type AccountMode = "manual" | "bot";
+export type BotType = "random";
+export type BotStatus = "running" | "stopped" | "ended";
 
 export type Ticker = {
   symbol: string;
@@ -71,6 +74,12 @@ export type AccountSnapshot = {
   accountId: string;
   accountName: string;
   accountKind: AccountKind;
+  accountMode: AccountMode;
+  botType?: BotType;
+  botStatus?: BotStatus;
+  botConfig?: RandomBotConfig;
+  botState?: RandomBotState;
+  stopReason?: string;
   cash: number;
   equity: number;
   usedMargin: number;
@@ -78,6 +87,43 @@ export type AccountSnapshot = {
   totalFees: number;
   positions: Position[];
   orders: Order[];
+};
+
+export type BotConfigField = {
+  key: keyof RandomBotConfig;
+  label: string;
+  type: "symbol" | "select" | "number" | "percent";
+  options?: Array<{ label: string; value: string }>;
+  min?: number;
+  max?: number;
+};
+
+export type BotDefinitionMeta = {
+  type: BotType;
+  name: string;
+  description: string;
+  configSchema: BotConfigField[];
+  defaultConfig: RandomBotConfig;
+};
+
+export type RandomBotConfig = {
+  symbol: string;
+  direction: "long" | "short" | "both";
+  amount: number;
+  amountUnit: AmountUnit;
+  leverage: number;
+  takeProfitPercent: number;
+  stopLossPercent: number;
+  maxDrawdownPercent: number;
+  entryIntervalSeconds: number;
+};
+
+export type RandomBotState = {
+  phase: "waiting" | "holding" | "ended";
+  activePositionId?: string;
+  lastEntryAt?: number;
+  lastExitAt?: number;
+  tradeCount: number;
 };
 
 export type AccountEquityEvent = {
@@ -132,6 +178,9 @@ export type TradingAccount = {
   id: string;
   name: string;
   kind: AccountKind;
+  mode: AccountMode;
+  botType?: BotType;
+  botStatus?: BotStatus;
   isActive: boolean;
   cash: number;
   equity?: number;

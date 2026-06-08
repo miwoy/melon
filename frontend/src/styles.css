@@ -298,6 +298,46 @@ select.invalid {
   background: #0c131a;
 }
 
+.bot-status-card {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.bot-status-card > div {
+  min-width: 0;
+  border: 1px solid #1b2734;
+  border-radius: 6px;
+  padding: 10px;
+  background: #0c131a;
+}
+
+.bot-status-card span,
+.bot-config-list dt {
+  display: block;
+  color: #91a2b6;
+  font-size: 12px;
+}
+
+.bot-status-card strong {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.bot-config-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.bot-form {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid #1b2734;
+  padding-top: 12px;
+}
+
 .trade-quote span,
 .position-focus span {
   display: block;
@@ -858,6 +898,15 @@ dd {
   .position-focus,
   dl {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .bot-status-card {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .bot-status-card > div {
+    padding: 8px;
   }
 
   .stats-grid {

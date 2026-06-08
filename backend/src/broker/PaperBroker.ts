@@ -159,6 +159,7 @@ export class PaperBroker {
       accountId: this.accountId,
       accountName: this.accountName,
       accountKind: "paper",
+      accountMode: "manual",
       cash: metrics.availableBalance,
       equity: metrics.equity,
       usedMargin: metrics.dynamicUsedMargin,

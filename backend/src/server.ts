@@ -3,6 +3,9 @@ import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import { AccountManager } from "./accounts/AccountManager.js";
 import { AuthService } from "./auth/AuthService.js";
+import { BotRegistry } from "./bots/BotRegistry.js";
+import { BotRuntime } from "./bots/BotRuntime.js";
+import { randomBotDefinition } from "./bots/definitions/RandomBot.js";
 import { config } from "./config.js";
 import { prisma } from "./db.js";
 import { BinanceExchange } from "./exchange/BinanceExchange.js";
@@ -18,6 +21,9 @@ await app.register(websocket);
 const exchange = new BinanceExchange(config);
 const accountManager = new AccountManager();
 await accountManager.initialize();
+const botRegistry = new BotRegistry();
+botRegistry.register(randomBotDefinition);
+const botRuntime = new BotRuntime(accountManager, botRegistry);
 const auth = new AuthService(config.appPassword, config.authTokenTtlSeconds);
 const hub = new EventHub();
 const tickers = new Map<string, Ticker>();
@@ -47,12 +53,24 @@ app.get("/api/tickers", async () => Object.fromEntries(tickers));
 
 app.get("/api/accounts", async () => accountManager.list());
 
+app.get("/api/bots/definitions", async () => ({ items: botRuntime.definitions() }));
+
 app.post("/api/accounts", async (request, reply) => {
   const parsed = createAccountSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
   const account = await accountManager.create(parsed.data);
   accountManager.seedTickers([...tickers.values()]);
-  return { id: account.id, name: account.name, kind: account.kind, isActive: false, cash: account.cash, createdAt: account.createdAt.getTime() };
+  return {
+    id: account.id,
+    name: account.name,
+    kind: account.kind,
+    mode: account.mode,
+    botType: account.botType,
+    botStatus: account.botStatus,
+    isActive: false,
+    cash: account.cash,
+    createdAt: account.createdAt.getTime()
+  };
 });
 
 app.put("/api/accounts/active", async (request, reply) => {
@@ -65,6 +83,17 @@ app.put("/api/accounts/active", async (request, reply) => {
     return snapshot;
   } catch (error) {
     return reply.code(404).send({ error: error instanceof Error ? error.message : "账户切换失败" });
+  }
+});
+
+app.post("/api/bots/stop", async (request, reply) => {
+  try {
+    await accountManager.stopBot(accountManager.activeId(), "用户终止机器人", "stopped");
+    const snapshot = await accountManager.snapshot();
+    hub.broadcast({ type: "account", data: snapshot });
+    return snapshot;
+  } catch (error) {
+    return reply.code(400).send({ error: error instanceof Error ? error.message : "终止机器人失败" });
   }
 });
 
@@ -161,6 +190,7 @@ async function handleTicker(ticker: Ticker) {
   const mergedTicker = mergeTicker(ticker);
   tickers.set(mergedTicker.symbol, mergedTicker);
   const filledOrders = await accountManager.updateTicker(mergedTicker);
+  await botRuntime.onTicker(mergedTicker);
   for (const order of filledOrders) {
     hub.broadcast({ type: "order", data: order });
   }
@@ -182,6 +212,9 @@ function mergeTicker(ticker: Ticker): Ticker {
 
 async function submitOrder(request: CreateOrderRequest) {
   const account = await accountManager.activeAccount();
+  if (account.mode === "bot") {
+    return rejectedOrder(request, account.id, "机器人账户不支持手动下单");
+  }
   const normalized = normalizeOrderAmount(request);
   if (!normalized.ok) {
     return rejectedOrder(request, account.id, normalized.reason);
@@ -204,6 +237,9 @@ async function submitOrder(request: CreateOrderRequest) {
       price: Number(result.price ?? result.average ?? 0),
       leverage: request.leverage,
       fee: 0,
+      closeAmount: 0,
+      closeFee: 0,
+      closePnl: 0,
       margin: 0,
       status: Number(result.remaining ?? 0) > 0 ? "partial" as const : "filled" as const,
       accountId: account.id,
@@ -241,6 +277,9 @@ function rejectedOrder(request: CreateOrderRequest, accountId: string, reason: s
     price: request.price ?? 0,
     leverage: request.leverage,
     fee: 0,
+    closeAmount: 0,
+    closeFee: 0,
+    closePnl: 0,
     margin: 0,
     status: "rejected" as const,
     accountId,

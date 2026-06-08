@@ -1,4 +1,4 @@
-import type { AccountKind, AccountSnapshot, AccountStats, AmountUnit, Order, OrderSide, OrderType, Paginated, Position, Ticker, TradingAccount } from "../types";
+import type { AccountKind, AccountMode, AccountSnapshot, AccountStats, AmountUnit, BotDefinitionMeta, BotType, Order, OrderSide, OrderType, Paginated, Position, RandomBotConfig, Ticker, TradingAccount } from "../types";
 
 const AUTH_STORAGE_KEY = "melon_auth_token";
 let authToken = sessionStorage.getItem(AUTH_STORAGE_KEY) ?? "";
@@ -39,9 +39,11 @@ export const api = {
   authStatus: () => fetchJson<{ required: boolean }>("/api/auth/status"),
   login: (password: string) => fetchJson<{ token: string; expiresAt: number }>("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
   symbols: () => fetchJson<{ symbols: string[] }>("/api/symbols"),
+  botDefinitions: () => fetchJson<{ items: BotDefinitionMeta[] }>("/api/bots/definitions"),
   accounts: () => fetchJson<TradingAccount[]>("/api/accounts"),
-  createAccount: (payload: { name: string; kind: AccountKind; startingCash?: number }) =>
+  createAccount: (payload: { name: string; kind: AccountKind; mode?: AccountMode; botType?: BotType; botConfig?: RandomBotConfig; startingCash?: number }) =>
     fetchJson<TradingAccount>("/api/accounts", { method: "POST", body: JSON.stringify(payload) }),
+  stopBot: () => fetchJson<AccountSnapshot>("/api/bots/stop", { method: "POST" }),
   switchAccount: (accountId: string) =>
     fetchJson<AccountSnapshot>("/api/accounts/active", { method: "PUT", body: JSON.stringify({ accountId }) }),
   tickers: () => fetchJson<Record<string, Ticker>>("/api/tickers"),
