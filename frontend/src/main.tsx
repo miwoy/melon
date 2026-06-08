@@ -28,7 +28,7 @@ const defaultRandomBotConfig: RandomBotConfig = {
   amountUnit: "quote",
   leverage: 10,
   takeProfitPercent: 0.01,
-  stopLossPercent: 0.005,
+  stopLossPercent: 0.1,
   maxDrawdownPercent: 0.2,
   entryIntervalSeconds: 30
 };
@@ -458,8 +458,8 @@ function BotAccountPanel({ account, onStop }: { account: AccountSnapshot; onStop
       <div><dt>方向</dt><dd>{botDirectionLabel(config.direction)}</dd></div>
       <div><dt>数量</dt><dd>{config.amountUnit === "quote" ? money(config.amount) : num(config.amount)}</dd></div>
       <div><dt>杠杆</dt><dd>{config.leverage}x</dd></div>
-      <div><dt>止盈</dt><dd>{rate(config.takeProfitPercent)}</dd></div>
-      <div><dt>止损</dt><dd>{rate(config.stopLossPercent)}</dd></div>
+      <div><dt>每仓止盈</dt><dd>{rate(config.takeProfitPercent)}</dd></div>
+      <div><dt>每仓止损</dt><dd>{rate(config.stopLossPercent)}</dd></div>
       <div><dt>最大回撤</dt><dd>{rate(config.maxDrawdownPercent)}</dd></div>
       <div><dt>开仓间隔</dt><dd>{config.entryIntervalSeconds}s</dd></div>
     </dl>}
@@ -740,17 +740,17 @@ function AccountForm({
         <label>数量单位<select value={botConfig.amountUnit} onChange={(e) => updateBotConfig("amountUnit", e.target.value as AmountUnit)}><option value="quote">USDT 金额</option><option value="base">币数量</option></select></label>
         <label>杠杆<input value={botConfig.leverage} onChange={(e) => updateBotConfig("leverage", Number(e.target.value))} inputMode="numeric" /></label>
         <label>再次开仓间隔<input value={botConfig.entryIntervalSeconds} onChange={(e) => updateBotConfig("entryIntervalSeconds", Number(e.target.value))} inputMode="numeric" /></label>
-        <label>止盈比例<input value={botConfig.takeProfitPercent * 100} onChange={(e) => updateBotConfig("takeProfitPercent", Number(e.target.value) / 100)} inputMode="decimal" /></label>
-        <label>止损比例<input value={botConfig.stopLossPercent * 100} onChange={(e) => updateBotConfig("stopLossPercent", Number(e.target.value) / 100)} inputMode="decimal" /></label>
+        <label>每仓止盈(%)<input value={botConfig.takeProfitPercent * 100} onChange={(e) => updateBotConfig("takeProfitPercent", Number(e.target.value) / 100)} inputMode="decimal" /></label>
+        <label>每仓止损(%)<input value={botConfig.stopLossPercent * 100} onChange={(e) => updateBotConfig("stopLossPercent", Number(e.target.value) / 100)} inputMode="decimal" /></label>
         <label className="span-2">最大回撤<input value={botConfig.maxDrawdownPercent * 100} onChange={(e) => updateBotConfig("maxDrawdownPercent", Number(e.target.value) / 100)} inputMode="decimal" /></label>
       </div>
     </div>}
-    <button className="neutral" onClick={onSubmit}>创建账户</button>
+    <button className="neutral form-submit" onClick={onSubmit}>创建账户</button>
   </div>;
 }
 
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-  return <div className="modal-backdrop" role="dialog" aria-modal="true"><section className="modal"><div className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={onClose} title="关闭"><X size={18} /></button></div>{children}</section></div>;
+  return <div className="modal-backdrop" role="dialog" aria-modal="true"><section className="modal"><div className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={onClose} title="关闭"><X size={18} /></button></div><div className="modal-body">{children}</div></section></div>;
 }
 
 function EmptyState({ text }: { text: string }) {

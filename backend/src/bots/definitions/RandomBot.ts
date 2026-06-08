@@ -12,7 +12,7 @@ export const randomBotDefinition: BotDefinition<RandomBotConfig, RandomBotState>
     amountUnit: "quote",
     leverage: 10,
     takeProfitPercent: 0.01,
-    stopLossPercent: 0.005,
+    stopLossPercent: 0.1,
     maxDrawdownPercent: 0.2,
     entryIntervalSeconds: 30
   },
@@ -39,8 +39,8 @@ export const randomBotDefinition: BotDefinition<RandomBotConfig, RandomBotState>
       ]
     },
     { key: "leverage", label: "杠杆倍数", type: "number", min: 1, max: 125 },
-    { key: "takeProfitPercent", label: "止盈比例", type: "percent", min: 0 },
-    { key: "stopLossPercent", label: "止损比例", type: "percent", min: 0 },
+    { key: "takeProfitPercent", label: "每仓止盈", type: "percent", min: 0 },
+    { key: "stopLossPercent", label: "每仓止损", type: "percent", min: 0 },
     { key: "maxDrawdownPercent", label: "最大回撤", type: "percent", min: 0 },
     { key: "entryIntervalSeconds", label: "再次开仓间隔秒数", type: "number", min: 0 }
   ],
