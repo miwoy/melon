@@ -4,5 +4,6 @@ dist
 .DS_Store
 *.log
 *.tsbuildinfo
+backups/
 backend/prisma/dev.db
 backend/prisma/dev.db-journal

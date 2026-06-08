@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_DIR="${APP_DIR:-/www/melon}"
 PM2_APP="${PM2_APP:-melon-backend}"
-NODE_DIR="${NODE_DIR:-/root/.nvm/versions/node/v24.16.0/bin}"
-BACKUP_DIR="${BACKUP_DIR:-/www/melon-backups}"
+BACKUP_DIR="${BACKUP_DIR:-./backups}"
 BRANCH="${BRANCH:-main}"
-
-export PATH="$NODE_DIR:$PATH"
 
 log() {
   printf '\n[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
@@ -21,22 +17,31 @@ require_cmd() {
 }
 
 log "检查运行环境"
+if ! command -v node >/dev/null 2>&1; then
+  NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  if [ -s "$NVM_DIR/nvm.sh" ]; then
+    # shellcheck disable=SC1090
+    . "$NVM_DIR/nvm.sh"
+  fi
+fi
+
 require_cmd git
 require_cmd node
 require_cmd npm
 require_cmd pm2
 require_cmd nginx
 
-cd "$APP_DIR"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
 
 log "备份配置和数据库"
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date '+%Y%m%d-%H%M%S')"
-if [ -f backend/.env ]; then
-  cp backend/.env "$BACKUP_DIR/.env.$STAMP"
+if [ -f ./backend/.env ]; then
+  cp ./backend/.env "$BACKUP_DIR/.env.$STAMP"
 fi
-if [ -f backend/data/melon.db ]; then
-  cp backend/data/melon.db "$BACKUP_DIR/melon.db.$STAMP"
+if [ -f ./backend/data/melon.db ]; then
+  cp ./backend/data/melon.db "$BACKUP_DIR/melon.db.$STAMP"
 fi
 
 log "拉取最新代码"
@@ -50,7 +55,6 @@ npm install
 log "同步数据库结构"
 npm --workspace backend run db:generate
 npm --workspace backend run db:push
-npm --workspace backend run db:init
 
 log "构建项目"
 npm run build
