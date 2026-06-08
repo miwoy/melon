@@ -722,8 +722,14 @@ function AccountForm({
   onSubmit: () => void;
 }) {
   const randomDefinition = botDefinitions.find((definition) => definition.type === botType);
+  const [drafts, setDrafts] = useState(() => botConfigDrafts(botConfig));
   function updateBotConfig<K extends keyof RandomBotConfig>(key: K, value: RandomBotConfig[K]) {
     setBotConfig({ ...botConfig, [key]: value });
+  }
+  function updateNumberDraft(key: keyof BotConfigDrafts, value: string, apply: (numberValue: number) => RandomBotConfig) {
+    setDrafts((current) => ({ ...current, [key]: value }));
+    const numberValue = Number(value);
+    if (value !== "" && Number.isFinite(numberValue)) setBotConfig(apply(numberValue));
   }
   return <div className="modal-form">
     <label>账户名称<input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：随机交易机器人" /></label>
@@ -731,18 +737,18 @@ function AccountForm({
     <label>交易模式<select value={mode} onChange={(e) => { const nextMode = e.target.value as AccountMode; setMode(nextMode); if (nextMode === "bot") setKind("paper"); }}><option value="manual">手动账户</option><option value="bot">机器人账户</option></select></label>
     {kind === "paper" && <label>初始资金<input value={cash} onChange={(e) => setCash(e.target.value)} inputMode="decimal" /></label>}
     {mode === "bot" && <div className="bot-form">
-      <label>机器人类型<select value={botType} onChange={(e) => { const nextType = e.target.value as BotType; setBotType(nextType); const definition = botDefinitions.find((item) => item.type === nextType); if (definition) setBotConfig({ ...definition.defaultConfig, symbol: symbols[0] ?? definition.defaultConfig.symbol }); }}><option value="random">随机交易机器人</option></select></label>
+      <label>机器人类型<select value={botType} onChange={(e) => { const nextType = e.target.value as BotType; setBotType(nextType); const definition = botDefinitions.find((item) => item.type === nextType); if (definition) { const nextConfig = { ...definition.defaultConfig, symbol: symbols[0] ?? definition.defaultConfig.symbol }; setBotConfig(nextConfig); setDrafts(botConfigDrafts(nextConfig)); } }}><option value="random">随机交易机器人</option></select></label>
       <div className="confirm-box">{randomDefinition?.description ?? "机器人账户创建后将自动运行，不提供手动交易入口。"}</div>
       <div className="form-grid">
         <label>交易对<select value={botConfig.symbol} onChange={(e) => updateBotConfig("symbol", e.target.value)}>{symbols.map((symbol) => <option key={symbol}>{symbol}</option>)}</select></label>
         <label>方向<select value={botConfig.direction} onChange={(e) => updateBotConfig("direction", e.target.value as RandomBotConfig["direction"])}><option value="both">随机多空</option><option value="long">只做多</option><option value="short">只做空</option></select></label>
-        <label>数量<input value={botConfig.amount} onChange={(e) => updateBotConfig("amount", Number(e.target.value))} inputMode="decimal" /></label>
+        <label>数量<input value={drafts.amount} onChange={(e) => updateNumberDraft("amount", e.target.value, (amount) => ({ ...botConfig, amount }))} inputMode="decimal" /></label>
         <label>数量单位<select value={botConfig.amountUnit} onChange={(e) => updateBotConfig("amountUnit", e.target.value as AmountUnit)}><option value="quote">USDT 金额</option><option value="base">币数量</option></select></label>
-        <label>杠杆<input value={botConfig.leverage} onChange={(e) => updateBotConfig("leverage", Number(e.target.value))} inputMode="numeric" /></label>
-        <label>再次开仓间隔<input value={botConfig.entryIntervalSeconds} onChange={(e) => updateBotConfig("entryIntervalSeconds", Number(e.target.value))} inputMode="numeric" /></label>
-        <label>每仓止盈(%)<input value={botConfig.takeProfitPercent * 100} onChange={(e) => updateBotConfig("takeProfitPercent", Number(e.target.value) / 100)} inputMode="decimal" /></label>
-        <label>每仓止损(%)<input value={botConfig.stopLossPercent * 100} onChange={(e) => updateBotConfig("stopLossPercent", Number(e.target.value) / 100)} inputMode="decimal" /></label>
-        <label className="span-2">最大回撤<input value={botConfig.maxDrawdownPercent * 100} onChange={(e) => updateBotConfig("maxDrawdownPercent", Number(e.target.value) / 100)} inputMode="decimal" /></label>
+        <label>杠杆<input value={drafts.leverage} onChange={(e) => updateNumberDraft("leverage", e.target.value, (leverage) => ({ ...botConfig, leverage }))} inputMode="numeric" /></label>
+        <label>再次开仓间隔<input value={drafts.entryIntervalSeconds} onChange={(e) => updateNumberDraft("entryIntervalSeconds", e.target.value, (entryIntervalSeconds) => ({ ...botConfig, entryIntervalSeconds }))} inputMode="numeric" /></label>
+        <label>每仓止盈(%)<input value={drafts.takeProfitPercent} onChange={(e) => updateNumberDraft("takeProfitPercent", e.target.value, (takeProfitPercent) => ({ ...botConfig, takeProfitPercent: takeProfitPercent / 100 }))} inputMode="decimal" /></label>
+        <label>每仓止损(%)<input value={drafts.stopLossPercent} onChange={(e) => updateNumberDraft("stopLossPercent", e.target.value, (stopLossPercent) => ({ ...botConfig, stopLossPercent: stopLossPercent / 100 }))} inputMode="decimal" /></label>
+        <label className="span-2">最大回撤<input value={drafts.maxDrawdownPercent} onChange={(e) => updateNumberDraft("maxDrawdownPercent", e.target.value, (maxDrawdownPercent) => ({ ...botConfig, maxDrawdownPercent: maxDrawdownPercent / 100 }))} inputMode="decimal" /></label>
       </div>
     </div>}
     <button className="neutral form-submit" onClick={onSubmit}>创建账户</button>
@@ -755,6 +761,26 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
 
 function EmptyState({ text }: { text: string }) {
   return <div className="empty-state">{text}</div>;
+}
+
+type BotConfigDrafts = {
+  amount: string;
+  leverage: string;
+  entryIntervalSeconds: string;
+  takeProfitPercent: string;
+  stopLossPercent: string;
+  maxDrawdownPercent: string;
+};
+
+function botConfigDrafts(config: RandomBotConfig): BotConfigDrafts {
+  return {
+    amount: String(config.amount),
+    leverage: String(config.leverage),
+    entryIntervalSeconds: String(config.entryIntervalSeconds),
+    takeProfitPercent: String(config.takeProfitPercent * 100),
+    stopLossPercent: String(config.stopLossPercent * 100),
+    maxDrawdownPercent: String(config.maxDrawdownPercent * 100)
+  };
 }
 
 function money(value: number) {
