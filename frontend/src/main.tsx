@@ -162,6 +162,9 @@ function App() {
   const selectedTicker = tickers[selectedSymbol];
   const isBotAccount = account.accountMode === "bot";
   const canRemoveAccount = accounts.length > 1;
+  const manualAccountHasOpenPositions = !isBotAccount && openPositions.length > 0;
+  const canArchiveOrDeleteAccount = canRemoveAccount && !manualAccountHasOpenPositions;
+  const accountActionDisabledReason = !canRemoveAccount ? "至少需要保留一个账户" : manualAccountHasOpenPositions ? "手动账户需要先平仓" : "";
   const referencePrice = orderType === "limit" ? Number(price) : selectedTicker?.last;
   const numericAmount = Number(amount);
   const numericLeverage = Number(leverage);
@@ -324,7 +327,7 @@ function App() {
   }
 
   function openAccountAction(action: AccountAction) {
-    if (!canRemoveAccount) return;
+    if (!canArchiveOrDeleteAccount) return;
     setAccountAction(action);
     setModal("accountAction");
   }
@@ -393,8 +396,8 @@ function App() {
       </section>
       <section className="account-actions">
         <button className="ghost" onClick={() => setModal("stats")}><BarChart3 size={16} />账户统计</button>
-        <button className="ghost" disabled={!canRemoveAccount} onClick={() => openAccountAction("archive")}><Archive size={16} />归档账户</button>
-        <button className="ghost danger" disabled={!canRemoveAccount} onClick={() => openAccountAction("delete")}><Trash2 size={16} />删除账户</button>
+        <button className="ghost" title={accountActionDisabledReason} disabled={!canArchiveOrDeleteAccount} onClick={() => openAccountAction("archive")}><Archive size={16} />归档账户</button>
+        <button className="ghost danger" title={accountActionDisabledReason} disabled={!canArchiveOrDeleteAccount} onClick={() => openAccountAction("delete")}><Trash2 size={16} />删除账户</button>
       </section>
 
       <section className="dashboard">
@@ -579,11 +582,12 @@ function PositionRiskForm({
 
 function ConfirmAccountAction({ action, account, onSubmit, onCancel }: { action: AccountAction; account: AccountSnapshot; onSubmit: () => void; onCancel: () => void }) {
   const isDelete = action === "delete";
+  const botMessage = account.accountMode === "bot" ? "如果账户还有持仓，系统会先终止机器人、撤销当前委托，并按市价平仓。" : "";
   return <div className="modal-form">
     <div className="confirm-box">
       {isDelete
-        ? `删除账户「${account.accountName}」后，该账户的仓位、订单和账户统计会一起删除，无法在系统内恢复。`
-        : `归档账户「${account.accountName}」后，它会从账户列表中隐藏，机器人也会停止运行。账户数据会保留在数据库中。`}
+        ? `删除账户「${account.accountName}」后，该账户的仓位、订单和账户统计会一起删除，无法在系统内恢复。${botMessage}`
+        : `归档账户「${account.accountName}」后，它会从账户列表中隐藏，账户数据会保留在数据库中。${botMessage}`}
     </div>
     <div className="confirm-actions">
       <button className="neutral ghost" onClick={onCancel}>取消</button>

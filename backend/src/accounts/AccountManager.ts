@@ -308,15 +308,19 @@ export class AccountManager {
 
   async archiveAccount(accountId: string) {
     const account = await this.accountForRemoval(accountId);
-    await this.cancelOpenOrders(accountId);
+    if (account.mode === "bot") {
+      await this.stopAndCloseBotAccount(accountId, "账户已归档");
+    } else {
+      this.assertNoOpenPositions(accountId, "账户存在持仓，请先平仓后再归档");
+    }
     await prisma.account.update({
       where: { id: accountId },
       data: {
         archivedAt: new Date(),
         isActive: false,
-        botStatus: account.mode === "bot" && account.botStatus === "running" ? "stopped" : account.botStatus,
-        stoppedAt: account.mode === "bot" && account.botStatus === "running" ? new Date() : account.stoppedAt,
-        stopReason: account.mode === "bot" && account.botStatus === "running" ? "账户已归档" : account.stopReason
+        botStatus: account.mode === "bot" ? "stopped" : account.botStatus,
+        stoppedAt: account.mode === "bot" ? new Date() : account.stoppedAt,
+        stopReason: account.mode === "bot" ? "账户已归档" : account.stopReason
       }
     });
     this.paperBrokers.delete(accountId);
@@ -326,6 +330,11 @@ export class AccountManager {
 
   async deleteAccount(accountId: string) {
     const account = await this.accountForRemoval(accountId);
+    if (account.mode === "bot") {
+      await this.stopAndCloseBotAccount(accountId, "账户已删除");
+    } else {
+      this.assertNoOpenPositions(accountId, "账户存在持仓，请先平仓后再删除");
+    }
     await prisma.account.delete({ where: { id: accountId } });
     this.paperBrokers.delete(accountId);
     if (account.id === this.activeAccountId) await this.activateFallbackAccount(accountId);
@@ -403,6 +412,48 @@ export class AccountManager {
       broker.cancelOrder(order.id);
     }
     await this.persistPaperState(accountId);
+  }
+
+  private assertNoOpenPositions(accountId: string, message: string) {
+    const broker = this.paperBrokers.get(accountId);
+    if (!broker) return;
+    if (broker.snapshot().positions.some((position) => position.status === "open" && position.amount > 0)) {
+      throw new Error(message);
+    }
+  }
+
+  private async stopAndCloseBotAccount(accountId: string, reason: string) {
+    await prisma.account.update({
+      where: { id: accountId },
+      data: {
+        botStatus: "stopped",
+        stoppedAt: new Date(),
+        stopReason: reason
+      }
+    });
+    await this.cancelOpenOrders(accountId);
+    await this.closeOpenPositions(accountId);
+  }
+
+  private async closeOpenPositions(accountId: string) {
+    const broker = this.paperBrokers.get(accountId);
+    if (!broker) return;
+    const positions = broker.snapshot().positions.filter((position) => position.status === "open" && position.amount > 0);
+    for (const position of positions) {
+      const order = broker.execute({
+        accountId,
+        symbol: position.symbol,
+        side: position.side === "long" ? "sell" : "buy",
+        type: "market",
+        amount: position.amount,
+        amountUnit: "base",
+        leverage: position.leverage
+      });
+      await this.persistPaperState(accountId);
+      if (order.status === "rejected") {
+        throw new Error(`无法自动平仓 ${position.symbol}: ${order.reason ?? "下单失败"}`);
+      }
+    }
   }
 
   private loadPaperBroker(account: LoadedAccount) {
