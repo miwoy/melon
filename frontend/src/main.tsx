@@ -410,9 +410,9 @@ function PositionCards({ positions, onRisk, onClose, onCloseAll }: { positions: 
     return <article className="position-card" key={p.id}>
       <div><strong>{p.symbol}</strong><span className={p.side === "long" ? "up" : "down"}>{positionSideLabel(p.side)} · {p.leverage}x</span></div>
       <div className="position-focus">
-        <div><span>实际收益</span><strong className={p.netPnl >= 0 ? "up" : "down"}>{money(p.netPnl)}</strong></div>
+        <div><span>实际收益</span><strong className={p.unrealizedPnl >= 0 ? "up" : "down"}>{money(p.unrealizedPnl)}</strong></div>
         <div><span>收益率</span><strong className={p.roi >= 0 ? "up" : "down"}>{rate(p.roi)}</strong></div>
-        <div><span>爆仓价</span><strong>{p.liquidationPrice > 0 ? money(p.liquidationPrice) : "-"}</strong></div>
+        <div><span>已实现PNL</span><strong className={p.realizedPnl >= 0 ? "up" : "down"}>{money(p.realizedPnl)}</strong></div>
       </div>
       <dl>
         <div><dt>剩余</dt><dd>{num(p.amount)}</dd></div>
@@ -545,7 +545,7 @@ function PositionHistory({ accountId }: { accountId: string }) {
   }, [accountId, page]);
   if (!data) return <EmptyState text="正在加载仓位历史" />;
   if (data.total === 0) return <EmptyState text="暂无已平仓或部分平仓记录" />;
-  return <><div className="table-scroll"><table><thead><tr><th>状态</th><th>交易对</th><th>方向</th><th>剩余</th><th>已平</th><th>杠杆</th><th>均价</th><th>标记价</th><th>均价涨跌</th><th>保证金</th><th>已实现PNL</th><th>未实现PNL</th><th>手续费</th><th>净收益</th><th>收益率</th></tr></thead><tbody>{data.items.map((p) => { const avgChange = positionAvgChange(p); return <tr key={p.id}><td>{positionHistoryStatusLabel(p)}</td><td>{p.symbol}</td><td className={p.side === "long" ? "up" : "down"}>{positionSideLabel(p.side)}</td><td>{num(p.amount)}</td><td>{num(p.closedAmount)}</td><td>{p.leverage}x</td><td>{money(p.avgEntry)}</td><td>{money(p.markPrice)}</td><td className={avgChange >= 0 ? "up" : "down"}>{rate(avgChange)}</td><td>{money(p.margin)}</td><td className={p.realizedPnl - p.fees >= 0 ? "up" : "down"}>{money(p.realizedPnl - p.fees)}</td><td className={p.unrealizedPnl >= 0 ? "up" : "down"}>{money(p.unrealizedPnl)}</td><td>{money(p.fees)}</td><td className={p.netPnl >= 0 ? "up" : "down"}>{money(p.netPnl)}</td><td className={p.roi >= 0 ? "up" : "down"}>{rate(p.roi)}</td></tr>; })}</tbody></table></div><Pagination page={data.page} totalPages={data.totalPages} total={data.total} onPage={setPage} /></>;
+  return <><div className="table-scroll"><table><thead><tr><th>状态</th><th>交易对</th><th>方向</th><th>剩余</th><th>已平</th><th>杠杆</th><th>均价</th><th>标记价</th><th>均价涨跌</th><th>保证金</th><th>已实现PNL</th><th>未实现PNL</th><th>手续费</th><th>净收益</th><th>收益率</th></tr></thead><tbody>{data.items.map((p) => { const avgChange = positionAvgChange(p); return <tr key={p.id}><td>{positionHistoryStatusLabel(p)}</td><td>{p.symbol}</td><td className={p.side === "long" ? "up" : "down"}>{positionSideLabel(p.side)}</td><td>{num(p.amount)}</td><td>{num(p.closedAmount)}</td><td>{p.leverage}x</td><td>{money(p.avgEntry)}</td><td>{money(p.markPrice)}</td><td className={avgChange >= 0 ? "up" : "down"}>{rate(avgChange)}</td><td>{money(p.margin)}</td><td className={p.realizedPnl >= 0 ? "up" : "down"}>{money(p.realizedPnl)}</td><td className={p.unrealizedPnl >= 0 ? "up" : "down"}>{money(p.unrealizedPnl)}</td><td>{money(p.fees)}</td><td className={p.netPnl >= 0 ? "up" : "down"}>{money(p.netPnl)}</td><td className={p.roi >= 0 ? "up" : "down"}>{rate(p.roi)}</td></tr>; })}</tbody></table></div><Pagination page={data.page} totalPages={data.totalPages} total={data.total} onPage={setPage} /></>;
 }
 
 function OrderHistory({ accountId }: { accountId: string }) {

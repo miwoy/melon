@@ -75,7 +75,7 @@ SET "fees" = COALESCE((
 ), 0)
 WHERE "fees" = 0;
 `);
-await prisma.$executeRawUnsafe(`UPDATE "Position" SET "netPnl" = "realizedPnl" + "unrealizedPnl" - "fees";`);
+await prisma.$executeRawUnsafe(`UPDATE "Position" SET "netPnl" = "realizedPnl" + "unrealizedPnl";`);
 await prisma.$executeRawUnsafe(`UPDATE "Position" SET "roi" = CASE WHEN "openedMargin" > 0 THEN "netPnl" / "openedMargin" ELSE 0 END;`);
 
 await prisma.$executeRawUnsafe(`DROP INDEX IF EXISTS "Position_accountId_symbol_key";`);

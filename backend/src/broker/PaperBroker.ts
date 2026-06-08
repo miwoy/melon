@@ -48,9 +48,9 @@ export class PaperBroker {
       .reduce((sum, order) => sum + order.fee, 0);
     const positionRealizedPnl = state.positions.reduce((sum, position) => sum + position.realizedPnl, 0);
     this.totalFees = orderFees || state.totalFees;
-    this.realizedPnl = isClose(state.realizedPnl + state.totalFees, positionRealizedPnl)
-      ? positionRealizedPnl
-      : state.realizedPnl;
+    this.realizedPnl = isClose(state.realizedPnl - this.totalFees, positionRealizedPnl)
+      ? state.realizedPnl
+      : positionRealizedPnl + this.totalFees;
     this.positions.clear();
     this.closedPositions.splice(0);
     for (const position of state.positions) {
@@ -296,6 +296,7 @@ export class PaperBroker {
     this.cash -= margin + fee;
     this.totalFees += fee;
     position.fees += fee;
+    position.realizedPnl -= fee;
     this.recalculate(position);
     return { ok: true as const, fee, margin };
   }
@@ -310,7 +311,7 @@ export class PaperBroker {
     position.signedAmount -= direction * closeAmount;
     position.margin -= releasedMargin;
     position.closedAmount += closeAmount;
-    position.realizedPnl += pnl;
+    position.realizedPnl += pnl - fee;
     position.fees += fee;
     position.amount = Math.abs(position.signedAmount);
     if (position.amount === 0) {
@@ -382,7 +383,7 @@ export class PaperBroker {
   }
 
   private recalculate(position: InternalPosition) {
-    position.netPnl = position.realizedPnl + position.unrealizedPnl - position.fees;
+    position.netPnl = position.realizedPnl + position.unrealizedPnl;
     position.roi = position.openedMargin > 0 ? position.netPnl / position.openedMargin : 0;
   }
 

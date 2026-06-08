@@ -136,7 +136,7 @@ export class AccountManager {
       prisma.position.count({ where }),
       prisma.position.findMany({
         where,
-        orderBy: [{ closedAt: "desc" }, { updatedAt: "desc" }],
+        orderBy: { updatedAt: "desc" },
         skip: page * pageSize,
         take: pageSize
       })
