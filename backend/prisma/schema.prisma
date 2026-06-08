@@ -1,0 +1,86 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id          String     @id @default(cuid())
+  name        String
+  kind        String
+  cash        Float
+  realizedPnl Float     @default(0)
+  totalFees   Float     @default(0)
+  isActive    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  positions   Position[]
+  orders      Order[]
+}
+
+model Position {
+  id            String   @id @default(cuid())
+  accountId     String
+  symbol        String
+  base          String
+  quote         String
+  side          String
+  status        String   @default("open")
+  signedAmount  Float
+  amount        Float
+  openedAmount  Float   @default(0)
+  closedAmount  Float   @default(0)
+  avgEntry      Float
+  markPrice     Float
+  marketValue   Float
+  leverage      Int
+  margin        Float
+  openedMargin  Float   @default(0)
+  realizedPnl   Float   @default(0)
+  unrealizedPnl Float
+  fees          Float   @default(0)
+  netPnl        Float   @default(0)
+  roi           Float   @default(0)
+  openedAt      DateTime @default(now())
+  closedAt      DateTime?
+  updatedAt     DateTime @updatedAt
+  account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  @@index([accountId, status])
+  @@index([accountId, symbol])
+}
+
+model Order {
+  id        String   @id
+  accountId String
+  symbol    String
+  side      String
+  type      String
+  amount    Float
+  filledAmount Float @default(0)
+  remainingAmount Float @default(0)
+  avgFillPrice Float @default(0)
+  price     Float
+  leverage  Int
+  fee       Float
+  margin    Float
+  status    String
+  reason    String?
+  createdAt DateTime @default(now())
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
+}
+
+model StrategySetting {
+  id          String   @id @default(cuid())
+  enabled     Boolean  @default(false)
+  symbol      String
+  shortWindow Int
+  longWindow  Int
+  tradeAmount Float
+  accountId   String?
+  updatedAt   DateTime @updatedAt
+}
