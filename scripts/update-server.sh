@@ -68,7 +68,16 @@ nginx -t
 systemctl reload nginx
 
 log "健康检查"
-curl --fail --silent --show-error http://127.0.0.1:4000/api/auth/status >/dev/null
+for attempt in {1..15}; do
+  if curl --fail --silent --show-error http://127.0.0.1:4000/api/auth/status >/dev/null; then
+    break
+  fi
+  if [ "$attempt" -eq 15 ]; then
+    echo "健康检查失败: 后端服务未在预期时间内响应" >&2
+    exit 1
+  fi
+  sleep 2
+done
 
 log "更新完成"
 pm2 status "$PM2_APP"
