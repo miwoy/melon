@@ -297,8 +297,10 @@ function serializeOrder(order: Order) {
     price: order.price,
     leverage: order.leverage,
     fee: order.fee,
+    closePnl: order.closePnl,
     margin: order.margin,
     status: order.status,
+    positionId: order.positionId,
     reason: order.reason,
     createdAt: new Date(order.createdAt)
   };
@@ -318,8 +320,10 @@ function deserializeOrder(order: DbOrder): Order {
     price: order.price,
     leverage: order.leverage,
     fee: order.fee,
+    closePnl: order.closePnl ?? 0,
     margin: order.margin,
     status: order.status as Order["status"],
+    positionId: order.positionId ?? undefined,
     reason: order.reason ?? undefined,
     createdAt: order.createdAt.getTime()
   };

@@ -56,9 +56,11 @@ export type Order = {
   price: number;
   leverage: number;
   fee: number;
+  closePnl: number;
   margin: number;
   status: OrderStatus;
   accountId: string;
+  positionId?: string;
   reason?: string;
   createdAt: number;
 };

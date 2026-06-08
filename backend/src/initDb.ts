@@ -99,8 +99,10 @@ CREATE TABLE IF NOT EXISTS "Order" (
   "price" REAL NOT NULL,
   "leverage" INTEGER NOT NULL,
   "fee" REAL NOT NULL,
+  "closePnl" REAL NOT NULL DEFAULT 0,
   "margin" REAL NOT NULL,
   "status" TEXT NOT NULL,
+  "positionId" TEXT,
   "reason" TEXT,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "Order_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account" ("id") ON DELETE CASCADE ON UPDATE CASCADE
@@ -110,6 +112,8 @@ CREATE TABLE IF NOT EXISTS "Order" (
 await addColumnIfMissing("Order", "filledAmount", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Order", "remainingAmount", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Order", "avgFillPrice", "REAL NOT NULL DEFAULT 0");
+await addColumnIfMissing("Order", "closePnl", "REAL NOT NULL DEFAULT 0");
+await addColumnIfMissing("Order", "positionId", "TEXT");
 await prisma.$executeRawUnsafe(`UPDATE "Order" SET "filledAmount" = "amount" WHERE "status" = 'filled' AND "filledAmount" = 0;`);
 await prisma.$executeRawUnsafe(`UPDATE "Order" SET "remainingAmount" = CASE WHEN "status" IN ('open', 'partial') THEN MAX("amount" - "filledAmount", 0) ELSE 0 END WHERE "remainingAmount" = 0;`);
 await prisma.$executeRawUnsafe(`UPDATE "Order" SET "avgFillPrice" = "price" WHERE "status" = 'filled' AND "avgFillPrice" = 0;`);
@@ -140,6 +144,9 @@ SET "realizedPnl" = COALESCE((
 
 await prisma.$executeRawUnsafe(`
 CREATE INDEX IF NOT EXISTS "Order_accountId_createdAt_idx" ON "Order"("accountId", "createdAt");
+`);
+await prisma.$executeRawUnsafe(`
+CREATE INDEX IF NOT EXISTS "Order_positionId_idx" ON "Order"("positionId");
 `);
 
 await prisma.$executeRawUnsafe(`

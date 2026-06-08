@@ -12,7 +12,7 @@ type FeeRates = {
 };
 
 type FillResult =
-  | { ok: true; fee: number; margin: number; filledAmount: number; avgFillPrice: number }
+  | { ok: true; fee: number; margin: number; closePnl: number; positionId?: string; filledAmount: number; avgFillPrice: number }
   | { ok: false; reason: string };
 
 type CrossAccountMetrics = {
@@ -225,6 +225,8 @@ export class PaperBroker {
 
     let fee = 0;
     let marginChange = 0;
+    let closePnl = 0;
+    let positionId = current.id;
 
     if (sameDirection) {
       const openResult = this.openPosition(current, signedDelta, price, request.leverage, feeRate);
@@ -235,12 +237,14 @@ export class PaperBroker {
       const closeAmount = Math.min(Math.abs(beforeAmount), Math.abs(signedDelta));
       const closeResult = this.closePosition(current, closeAmount, price, feeRate);
       fee += closeResult.fee;
+      closePnl += closeResult.pnl;
       marginChange -= closeResult.releasedMargin;
 
       const remainingDelta = signedDelta + Math.sign(beforeAmount) * closeAmount;
       if (Math.abs(remainingDelta) > 0) {
         this.finishPosition(current, price);
         current = this.createPosition(request.symbol, base, quote, request.leverage, price);
+        positionId = positionId || current.id;
         const openResult = this.openPosition(current, remainingDelta, price, request.leverage, feeRate);
         if (!openResult.ok) return { ok: false, reason: openResult.reason };
         fee += openResult.fee;
@@ -255,7 +259,7 @@ export class PaperBroker {
       this.finishPosition(current, price);
     }
 
-    return { ok: true, fee, margin: Math.max(marginChange, 0), filledAmount: request.amount, avgFillPrice: price };
+    return { ok: true, fee, margin: Math.max(marginChange, 0), closePnl, positionId, filledAmount: request.amount, avgFillPrice: price };
   }
 
   private fill(request: CreateOrderRequest, price: number, feeRate: number, id = nanoid()): Order {
@@ -325,7 +329,7 @@ export class PaperBroker {
     this.totalFees += fee;
     this.realizedPnl += pnl;
     this.recalculate(position);
-    return { fee, releasedMargin };
+    return { fee, pnl: pnl - fee, releasedMargin };
   }
 
   private mark(position: InternalPosition, price: number) {
@@ -538,6 +542,8 @@ export class PaperBroker {
     order.filledAmount = amount;
     order.remainingAmount = 0;
     order.avgFillPrice = price;
+    order.closePnl = closeResult.pnl;
+    order.positionId = position.id;
     order.reason = reason;
     this.pushOrder(order);
     return order;
@@ -578,7 +584,9 @@ export class PaperBroker {
     order.remainingAmount = Math.max(order.amount - nextFilled, 0);
     order.avgFillPrice = nextFilled > 0 ? weightedPrice / nextFilled : 0;
     order.fee += result.fee;
+    order.closePnl += result.closePnl;
     order.margin += result.margin;
+    order.positionId = order.positionId ?? result.positionId;
     order.status = order.remainingAmount > 0 ? "partial" : "filled";
     changedTimestamp(order);
   }
@@ -609,6 +617,7 @@ export class PaperBroker {
       price,
       leverage: request.leverage,
       fee,
+      closePnl: 0,
       margin,
       status,
       accountId: this.accountId,

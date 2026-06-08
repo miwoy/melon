@@ -68,13 +68,16 @@ model Order {
   price     Float
   leverage  Int
   fee       Float
+  closePnl  Float    @default(0)
   margin    Float
   status    String
+  positionId String?
   reason    String?
   createdAt DateTime @default(now())
   account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@index([accountId, createdAt])
+  @@index([positionId])
 }
 
 model StrategySetting {
