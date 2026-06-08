@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS "Position" (
   "openedAmount" REAL NOT NULL DEFAULT 0,
   "closedAmount" REAL NOT NULL DEFAULT 0,
   "avgEntry" REAL NOT NULL,
+  "closeAvgPrice" REAL NOT NULL DEFAULT 0,
   "markPrice" REAL NOT NULL,
   "marketValue" REAL NOT NULL,
   "takeProfitPrice" REAL,
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS "Position" (
 await addColumnIfMissing("Position", "status", "TEXT NOT NULL DEFAULT 'open'");
 await addColumnIfMissing("Position", "openedAmount", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Position", "closedAmount", "REAL NOT NULL DEFAULT 0");
+await addColumnIfMissing("Position", "closeAvgPrice", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Position", "takeProfitPrice", "REAL");
 await addColumnIfMissing("Position", "stopLossPrice", "REAL");
 await addColumnIfMissing("Position", "openedMargin", "REAL NOT NULL DEFAULT 0");
@@ -65,6 +67,7 @@ await addColumnIfMissing("Position", "closedAt", "DATETIME");
 await prisma.$executeRawUnsafe(`UPDATE "Position" SET "openedAt" = COALESCE("openedAt", "updatedAt", CURRENT_TIMESTAMP);`);
 await prisma.$executeRawUnsafe(`UPDATE "Position" SET "openedAmount" = "amount" WHERE "openedAmount" = 0;`);
 await prisma.$executeRawUnsafe(`UPDATE "Position" SET "openedMargin" = "margin" WHERE "openedMargin" = 0;`);
+await prisma.$executeRawUnsafe(`UPDATE "Position" SET "closeAvgPrice" = "markPrice" WHERE "closedAmount" > 0 AND "closeAvgPrice" = 0;`);
 await prisma.$executeRawUnsafe(`
 UPDATE "Position"
 SET "fees" = COALESCE((

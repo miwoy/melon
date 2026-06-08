@@ -34,6 +34,7 @@ model Position {
   openedAmount  Float   @default(0)
   closedAmount  Float   @default(0)
   avgEntry      Float
+  closeAvgPrice Float   @default(0)
   markPrice     Float
   marketValue   Float
   takeProfitPrice Float?

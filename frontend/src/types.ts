@@ -26,6 +26,7 @@ export type Position = {
   openedAmount: number;
   closedAmount: number;
   avgEntry: number;
+  closeAvgPrice: number;
   markPrice: number;
   marketValue: number;
   liquidationPrice: number;

@@ -192,6 +192,7 @@ export class PaperBroker {
         openedAmount: position.openedAmount,
         closedAmount: position.closedAmount,
         avgEntry: position.avgEntry,
+        closeAvgPrice: position.closeAvgPrice,
         markPrice: position.markPrice,
         marketValue: position.marketValue,
         takeProfitPrice: position.takeProfitPrice,
@@ -307,10 +308,12 @@ export class PaperBroker {
     const fee = notional * feeRate;
     const pnl = (price - position.avgEntry) * closeAmount * direction;
     const releasedMargin = position.margin * (closeAmount / Math.abs(position.signedAmount));
+    const closedAmountBefore = position.closedAmount;
 
     position.signedAmount -= direction * closeAmount;
     position.margin -= releasedMargin;
     position.closedAmount += closeAmount;
+    position.closeAvgPrice = weightedAverage(position.closeAvgPrice, closedAmountBefore, price, closeAmount);
     position.realizedPnl += pnl - fee;
     position.fees += fee;
     position.amount = Math.abs(position.signedAmount);
@@ -347,6 +350,7 @@ export class PaperBroker {
       openedAmount: 0,
       closedAmount: 0,
       avgEntry: 0,
+      closeAvgPrice: 0,
       markPrice: price,
       marketValue: 0,
       liquidationPrice: 0,
@@ -629,4 +633,10 @@ function isClose(left: number, right: number) {
 
 function positiveOrUndefined(value?: number | null) {
   return value && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function weightedAverage(currentAvg: number, currentAmount: number, nextPrice: number, nextAmount: number) {
+  const totalAmount = currentAmount + nextAmount;
+  if (totalAmount <= 0) return 0;
+  return (currentAvg * currentAmount + nextPrice * nextAmount) / totalAmount;
 }
