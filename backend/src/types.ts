@@ -79,6 +79,8 @@ export type AccountSnapshot = {
   botStatus?: BotStatus;
   botConfig?: RandomBotConfig;
   botState?: RandomBotState;
+  botStartedAt?: number;
+  botStoppedAt?: number;
   stopReason?: string;
   cash: number;
   equity: number;
@@ -196,6 +198,8 @@ export type TradingAccount = {
   mode: AccountMode;
   botType?: BotType;
   botStatus?: BotStatus;
+  botStartedAt?: number;
+  botStoppedAt?: number;
   isActive: boolean;
   cash: number;
   equity?: number;

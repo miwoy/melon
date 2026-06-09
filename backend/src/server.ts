@@ -67,6 +67,8 @@ app.post("/api/accounts", async (request, reply) => {
     mode: account.mode,
     botType: account.botType,
     botStatus: account.botStatus,
+    botStartedAt: account.startedAt?.getTime(),
+    botStoppedAt: account.stoppedAt?.getTime(),
     isActive: false,
     cash: account.cash,
     createdAt: account.createdAt.getTime()

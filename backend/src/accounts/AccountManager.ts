@@ -57,6 +57,8 @@ export class AccountManager {
       mode: account.mode as AccountMode,
       botType: account.botType as BotType | undefined,
       botStatus: account.botStatus as BotStatus | undefined,
+      botStartedAt: account.startedAt?.getTime(),
+      botStoppedAt: account.stoppedAt?.getTime(),
       isActive: account.id === this.activeAccountId,
       cash: account.cash,
       createdAt: account.createdAt.getTime()
@@ -132,6 +134,8 @@ export class AccountManager {
       botStatus: account.botStatus as BotStatus | undefined,
       botConfig: parseBotConfig(account.botConfig),
       botState: parseBotState(account.botState),
+      botStartedAt: account.startedAt?.getTime(),
+      botStoppedAt: account.stoppedAt?.getTime(),
       stopReason: account.stopReason ?? undefined,
       cash: account.cash,
       equity: account.cash,
@@ -620,6 +624,8 @@ function withAccountMeta(snapshot: AccountSnapshot, account: Account): AccountSn
     botStatus: account.botStatus as BotStatus | undefined,
     botConfig: parseBotConfig(account.botConfig),
     botState: parseBotState(account.botState),
+    botStartedAt: account.startedAt?.getTime(),
+    botStoppedAt: account.stoppedAt?.getTime(),
     stopReason: account.stopReason ?? undefined
   };
 }

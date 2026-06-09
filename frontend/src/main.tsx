@@ -320,7 +320,7 @@ function App() {
     try {
       const snapshot = await api.stopBot();
       setAccount(snapshot);
-      setAccounts((current) => current.map((item) => item.id === snapshot.accountId ? { ...item, botStatus: snapshot.botStatus } : item));
+      setAccounts((current) => current.map((item) => item.id === snapshot.accountId ? { ...item, botStatus: snapshot.botStatus, botStartedAt: snapshot.botStartedAt, botStoppedAt: snapshot.botStoppedAt } : item));
     } catch (error) {
       handleAuthError(error);
     }
@@ -475,11 +475,21 @@ function PanelHeader({ title, actionLabel, onAction }: { title: string; actionLa
 
 function BotAccountPanel({ account, onStop }: { account: AccountSnapshot; onStop: () => void }) {
   const config = account.botConfig;
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (account.botStatus !== "running") return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [account.botStatus, account.botStartedAt]);
+  const runtimeEnd = account.botStatus === "running" ? now : account.botStoppedAt ?? now;
+  const runtimeMs = account.botStartedAt ? Math.max(runtimeEnd - account.botStartedAt, 0) : 0;
   return <>
     <PanelHeader title="机器人账户" />
     <div className="bot-status-card">
       <div><span>机器人类型</span><strong>{botTypeLabel(account.botType)}</strong></div>
       <div><span>运行状态</span><strong className={account.botStatus === "running" ? "up" : "down"}>{botStatusLabel(account.botStatus)}</strong></div>
+      <div><span>启动时间</span><strong>{account.botStartedAt ? dateTime(account.botStartedAt) : "-"}</strong></div>
+      <div><span>运行时长</span><strong>{account.botStartedAt ? duration(runtimeMs) : "-"}</strong></div>
       <div><span>阶段</span><strong>{account.botState?.phase === "holding" ? "持仓中" : account.botState?.phase === "ended" ? "已结束" : "等待开仓"}</strong></div>
       <div><span>交易次数</span><strong>{account.botState?.tradeCount ?? 0}</strong></div>
     </div>
@@ -844,6 +854,22 @@ function pct(value?: number) {
 
 function rate(value: number) {
   return `${(value * 100).toFixed(2)}%`;
+}
+
+function dateTime(value: number) {
+  return new Date(value).toLocaleString();
+}
+
+function duration(ms: number) {
+  const totalSeconds = Math.max(Math.floor(ms / 1000), 0);
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  if (days > 0) return `${days}天 ${hours}小时 ${minutes}分`;
+  if (hours > 0) return `${hours}小时 ${minutes}分 ${seconds}秒`;
+  if (minutes > 0) return `${minutes}分 ${seconds}秒`;
+  return `${seconds}秒`;
 }
 
 function sideLabel(side: "buy" | "sell") {
