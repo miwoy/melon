@@ -54,7 +54,7 @@ npm install
 
 log "同步数据库结构"
 npm --workspace backend run db:generate
-npm --workspace backend run db:push
+npm --workspace backend run db:init
 
 log "构建项目"
 npm run build
