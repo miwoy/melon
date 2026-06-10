@@ -113,10 +113,30 @@ p {
 
 .account-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   justify-content: flex-end;
   max-width: 1440px;
   margin: -4px auto 12px;
+}
+
+.inline-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  max-width: min(540px, 100%);
+  border: 1px solid #80333f;
+  border-radius: 8px;
+  padding: 6px 8px 6px 12px;
+  margin-right: auto;
+  background: #251116;
+  color: #ffb3bd;
+  font-size: 13px;
+}
+
+.inline-error span {
+  overflow-wrap: anywhere;
 }
 
 .metric,

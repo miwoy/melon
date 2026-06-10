@@ -10,7 +10,7 @@ import { config } from "./config.js";
 import { prisma } from "./db.js";
 import { BinanceExchange } from "./exchange/BinanceExchange.js";
 import { BinanceMarketStream } from "./market/BinanceMarketStream.js";
-import { createAccountSchema, createOrderSchema, idParamSchema, loginSchema, paginationSchema, positionRiskSchema, switchAccountSchema } from "./schemas.js";
+import { accountQuerySchema, createAccountSchema, createOrderSchema, idParamSchema, loginSchema, paginationSchema, positionRiskSchema, switchAccountSchema } from "./schemas.js";
 import type { CreateOrderRequest, Ticker } from "./types.js";
 import { EventHub } from "./ws/EventHub.js";
 
@@ -27,6 +27,8 @@ const botRuntime = new BotRuntime(accountManager, botRegistry);
 const auth = new AuthService(config.appPassword, config.authTokenTtlSeconds);
 const hub = new EventHub();
 const tickers = new Map<string, Ticker>();
+const TICKER_STATS_REFRESH_MS = 30_000;
+const AUTH_SWEEP_MS = 60_000;
 
 app.addHook("onRequest", async (request, reply) => {
   if (!auth.required()) return;
@@ -81,10 +83,19 @@ app.put("/api/accounts/active", async (request, reply) => {
   try {
     const snapshot = await accountManager.switch(parsed.data.accountId);
     accountManager.seedTickers([...tickers.values()]);
-    hub.broadcast({ type: "account", data: snapshot });
     return snapshot;
   } catch (error) {
     return reply.code(404).send({ error: error instanceof Error ? error.message : "账户切换失败" });
+  }
+});
+
+app.get("/api/accounts/:id/snapshot", async (request, reply) => {
+  const params = idParamSchema.safeParse(request.params);
+  if (!params.success) return reply.code(400).send({ error: params.error.flatten() });
+  try {
+    return await accountManager.snapshotFor(params.data.id);
+  } catch (error) {
+    return reply.code(404).send({ error: error instanceof Error ? error.message : "账户不存在" });
   }
 });
 
@@ -94,7 +105,6 @@ app.patch("/api/accounts/:id/archive", async (request, reply) => {
   try {
     const snapshot = await accountManager.archiveAccount(params.data.id);
     const accounts = await accountManager.list();
-    hub.broadcast({ type: "account", data: snapshot });
     return { accounts, account: snapshot };
   } catch (error) {
     return reply.code(400).send({ error: error instanceof Error ? error.message : "归档账户失败" });
@@ -107,7 +117,6 @@ app.delete("/api/accounts/:id", async (request, reply) => {
   try {
     const snapshot = await accountManager.deleteAccount(params.data.id);
     const accounts = await accountManager.list();
-    hub.broadcast({ type: "account", data: snapshot });
     return { accounts, account: snapshot };
   } catch (error) {
     return reply.code(400).send({ error: error instanceof Error ? error.message : "删除账户失败" });
@@ -115,10 +124,13 @@ app.delete("/api/accounts/:id", async (request, reply) => {
 });
 
 app.post("/api/bots/stop", async (request, reply) => {
+  const parsed = accountQuerySchema.safeParse(request.query);
+  if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
   try {
-    await accountManager.stopBot(accountManager.activeId(), "用户终止机器人", "stopped");
-    const snapshot = await accountManager.snapshot();
-    hub.broadcast({ type: "account", data: snapshot });
+    const accountId = parsed.data.accountId ?? accountManager.activeId();
+    await accountManager.stopBot(accountId, "用户终止机器人", "stopped");
+    const snapshot = await accountManager.snapshotFor(accountId);
+    hub.broadcastAccount(accountId, { type: "account", data: snapshot });
     return snapshot;
   } catch (error) {
     return reply.code(400).send({ error: error instanceof Error ? error.message : "终止机器人失败" });
@@ -127,16 +139,20 @@ app.post("/api/bots/stop", async (request, reply) => {
 
 app.get("/api/account", async () => accountManager.snapshot());
 
-app.get("/api/account/stats", async () => accountManager.accountStats());
+app.get("/api/account/stats", async (request, reply) => {
+  const parsed = accountQuerySchema.safeParse(request.query);
+  if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+  return accountManager.accountStats(parsed.data.accountId);
+});
 
 app.get("/api/orders/history", async (request, reply) => {
-  const parsed = paginationSchema.safeParse(request.query);
+  const parsed = paginationSchema.merge(accountQuerySchema).safeParse(request.query);
   if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
   return accountManager.paginatedOrders(parsed.data);
 });
 
 app.get("/api/positions/history", async (request, reply) => {
-  const parsed = paginationSchema.safeParse(request.query);
+  const parsed = paginationSchema.merge(accountQuerySchema).safeParse(request.query);
   if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
   return accountManager.paginatedPositionHistory(parsed.data);
 });
@@ -153,9 +169,13 @@ app.delete("/api/orders/:id", async (request, reply) => {
   const parsed = idParamSchema.safeParse(request.params);
   if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
   try {
-    const order = await accountManager.cancelPaperOrder(parsed.data.id);
+    const query = accountQuerySchema.safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: query.error.flatten() });
+    const order = query.data.accountId
+      ? await accountManager.cancelPaperOrderForAccount(query.data.accountId, parsed.data.id)
+      : await accountManager.cancelPaperOrder(parsed.data.id);
     hub.broadcast({ type: "order", data: order });
-    hub.broadcast({ type: "account", data: await accountManager.snapshot() });
+    hub.broadcastAccount(order.accountId, { type: "account", data: await accountManager.snapshotFor(order.accountId) });
     return order;
   } catch (error) {
     return reply.code(404).send({ error: error instanceof Error ? error.message : "取消委托失败" });
@@ -168,8 +188,12 @@ app.patch("/api/positions/:id/risk", async (request, reply) => {
   if (!params.success) return reply.code(400).send({ error: params.error.flatten() });
   if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
   try {
-    const snapshot = await accountManager.updatePaperPositionRisk({ positionId: params.data.id, ...body.data });
-    hub.broadcast({ type: "account", data: snapshot });
+    const query = accountQuerySchema.safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ error: query.error.flatten() });
+    const snapshot = query.data.accountId
+      ? await accountManager.updatePaperPositionRiskForAccount(query.data.accountId, { positionId: params.data.id, ...body.data })
+      : await accountManager.updatePaperPositionRisk({ positionId: params.data.id, ...body.data });
+    hub.broadcastAccount(snapshot.accountId, { type: "account", data: snapshot });
     return snapshot;
   } catch (error) {
     return reply.code(404).send({ error: error instanceof Error ? error.message : "设置止盈止损失败" });
@@ -181,9 +205,11 @@ app.get("/ws", { websocket: true }, (socket, request) => {
     socket.close(1008, "unauthorized");
     return;
   }
-  hub.add(socket);
+  const accountId = accountIdFromWsUrl(request.url);
+  hub.add(socket, { accountId });
   socket.send(JSON.stringify({ type: "tickers", data: Object.fromEntries(tickers) }));
-  accountManager.snapshot().then((snapshot) => socket.send(JSON.stringify({ type: "account", data: snapshot })));
+  const snapshotPromise = accountId ? accountManager.snapshotFor(accountId) : accountManager.snapshot();
+  snapshotPromise.then((snapshot) => socket.send(JSON.stringify({ type: "account", data: snapshot })));
 });
 
 const marketStream = new BinanceMarketStream(config.defaultSymbols, config.marketWsReconnectMs, (ticker) => {
@@ -211,9 +237,9 @@ const tickerStatsTimer = setInterval(() => {
       .then((ticker) => enqueueTicker(ticker))
       .catch((error) => app.log.warn({ err: error, symbol }, "24h ticker stats refresh failed"));
   }
-}, 30_000);
+}, TICKER_STATS_REFRESH_MS);
 
-const authSweepTimer = setInterval(() => auth.sweep(), 60_000);
+const authSweepTimer = setInterval(() => auth.sweep(), AUTH_SWEEP_MS);
 
 function enqueueTicker(ticker: Ticker) {
   tickerQueue = tickerQueue
@@ -224,13 +250,20 @@ function enqueueTicker(ticker: Ticker) {
 async function handleTicker(ticker: Ticker) {
   const mergedTicker = mergeTicker(ticker);
   tickers.set(mergedTicker.symbol, mergedTicker);
-  const filledOrders = await accountManager.updateTicker(mergedTicker);
+  const tickerUpdate = await accountManager.updateTicker(mergedTicker);
   await botRuntime.onTicker(mergedTicker);
-  for (const order of filledOrders) {
+  for (const order of tickerUpdate.orders) {
     hub.broadcast({ type: "order", data: order });
   }
   hub.broadcast({ type: "tickers", data: Object.fromEntries(tickers) });
-  hub.broadcast({ type: "account", data: await accountManager.snapshot() });
+  const accountIds = [...new Set([...tickerUpdate.accountIds, ...hub.subscribedAccountIds()])];
+  for (const accountId of accountIds) {
+    try {
+      hub.broadcastAccount(accountId, { type: "account", data: await accountManager.snapshotFor(accountId) });
+    } catch (error) {
+      app.log.warn({ err: error, accountId }, "account snapshot broadcast failed");
+    }
+  }
 }
 
 function mergeTicker(ticker: Ticker): Ticker {
@@ -246,7 +279,12 @@ function mergeTicker(ticker: Ticker): Ticker {
 }
 
 async function submitOrder(request: CreateOrderRequest) {
-  const account = await accountManager.activeAccount();
+  const account = request.accountId
+    ? await prisma.account.findUnique({ where: { id: request.accountId } })
+    : await accountManager.activeAccount();
+  if (!account || account.archivedAt) {
+    return rejectedOrder(request, request.accountId ?? "", "账户不存在");
+  }
   if (account.mode === "bot") {
     return rejectedOrder(request, account.id, "机器人账户不支持手动下单");
   }
@@ -284,7 +322,7 @@ async function submitOrder(request: CreateOrderRequest) {
 
   const order = await accountManager.executePaper({ ...request, accountId: account.id });
   hub.broadcast({ type: "order", data: order });
-  hub.broadcast({ type: "account", data: await accountManager.snapshot() });
+  hub.broadcastAccount(account.id, { type: "account", data: await accountManager.snapshotFor(account.id) });
   return order;
 }
 
@@ -301,7 +339,8 @@ function normalizeOrderAmount(request: CreateOrderRequest):
 
 function rejectedOrder(request: CreateOrderRequest, accountId: string, reason: string) {
   return {
-    id: "rejected-" + Date.now(),
+    id: request.clientOrderId ?? "rejected-" + Date.now(),
+    clientOrderId: request.clientOrderId,
     symbol: request.symbol,
     side: request.side,
     type: request.type,
@@ -340,10 +379,16 @@ function tokenFromWsUrl(url: string) {
   return new URLSearchParams(query).get("token") ?? undefined;
 }
 
+function accountIdFromWsUrl(url: string) {
+  const query = url.split("?")[1];
+  if (!query) return undefined;
+  return new URLSearchParams(query).get("accountId") ?? undefined;
+}
+
 for (const symbol of config.defaultSymbols) {
   exchange.fetchTicker(symbol).then((ticker) => {
     tickers.set(symbol, ticker);
-    void accountManager.updateTicker(ticker);
+    enqueueTicker(ticker);
   }).catch((error) => app.log.warn({ err: error, symbol }, "REST ticker warmup failed"));
 }
 

@@ -111,6 +111,10 @@ export class PaperBroker {
   }
 
   execute(request: CreateOrderRequest): Order {
+    if (request.clientOrderId) {
+      const existing = this.orders.find((order) => order.clientOrderId === request.clientOrderId);
+      if (existing) return existing;
+    }
     const ticker = this.tickers.get(request.symbol);
     const normalized = this.normalizeOrderAmount(request, ticker?.last);
     if (!normalized.ok) return this.reject(request, normalized.reason);
@@ -267,7 +271,7 @@ export class PaperBroker {
     return { ok: true, fee, margin: Math.max(marginChange, 0), closeAmount: closeFilledAmount, closeFee, closePnl, positionId, filledAmount: request.amount, avgFillPrice: price };
   }
 
-  private fill(request: CreateOrderRequest, price: number, feeRate: number, id = nanoid()): Order {
+  private fill(request: CreateOrderRequest, price: number, feeRate: number, id = orderId(request)): Order {
     const result = this.applyFill(request, price, feeRate);
     if (!result.ok) return this.reject(request, result.reason);
     const order = this.order(request, price, "filled", 0, 0, id);
@@ -612,10 +616,11 @@ export class PaperBroker {
     status: Order["status"],
     fee: number,
     margin: number,
-    id = nanoid()
+    id = orderId(request)
   ): Order {
     return {
       id,
+      clientOrderId: request.clientOrderId,
       symbol: request.symbol,
       side: request.side,
       type: request.type,
@@ -645,6 +650,10 @@ export class PaperBroker {
 
 function changedTimestamp(order: Order) {
   order.createdAt = order.createdAt || Date.now();
+}
+
+function orderId(request: CreateOrderRequest) {
+  return request.clientOrderId ?? nanoid();
 }
 
 function isClose(left: number, right: number) {

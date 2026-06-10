@@ -49,6 +49,7 @@ export type Position = {
 
 export type Order = {
   id: string;
+  clientOrderId?: string;
   symbol: string;
   side: OrderSide;
   type: OrderType;
@@ -163,17 +164,6 @@ export type Paginated<T> = {
   pageSize: number;
   total: number;
   totalPages: number;
-};
-
-export type StrategyState = {
-  enabled: boolean;
-  symbol: string;
-  shortWindow: number;
-  longWindow: number;
-  tradeAmount: number;
-  accountId?: string;
-  lastSignal: string;
-  prices: number[];
 };
 
 export type TradingAccount = {

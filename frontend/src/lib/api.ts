@@ -12,6 +12,10 @@ export class ApiError extends Error {
   }
 }
 
+function accountQuery(accountId?: string) {
+  return accountId ? `accountId=${encodeURIComponent(accountId)}` : "";
+}
+
 export function setAuthToken(token: string) {
   authToken = token;
   if (token) sessionStorage.setItem(AUTH_STORAGE_KEY, token);
@@ -47,18 +51,18 @@ export const api = {
     fetchJson<{ accounts: TradingAccount[]; account: AccountSnapshot }>(`/api/accounts/${accountId}/archive`, { method: "PATCH", body: JSON.stringify({ confirm: true }) }),
   deleteAccount: (accountId: string) =>
     fetchJson<{ accounts: TradingAccount[]; account: AccountSnapshot }>(`/api/accounts/${accountId}`, { method: "DELETE", body: JSON.stringify({ confirm: true }) }),
-  stopBot: () => fetchJson<AccountSnapshot>("/api/bots/stop", { method: "POST" }),
+  stopBot: (accountId?: string) => fetchJson<AccountSnapshot>(`/api/bots/stop${accountId ? `?${accountQuery(accountId)}` : ""}`, { method: "POST" }),
   switchAccount: (accountId: string) =>
     fetchJson<AccountSnapshot>("/api/accounts/active", { method: "PUT", body: JSON.stringify({ accountId }) }),
   tickers: () => fetchJson<Record<string, Ticker>>("/api/tickers"),
-  account: () => fetchJson<AccountSnapshot>("/api/account"),
-  accountStats: () => fetchJson<AccountStats>("/api/account/stats"),
-  orders: (page: number, pageSize: number) => fetchJson<Paginated<Order>>(`/api/orders/history?page=${page}&pageSize=${pageSize}`),
-  positionHistory: (page: number, pageSize: number) => fetchJson<Paginated<Position>>(`/api/positions/history?page=${page}&pageSize=${pageSize}`),
-  updatePositionRisk: (positionId: string, payload: { takeProfitPrice?: number | null; stopLossPrice?: number | null }) =>
-    fetchJson<AccountSnapshot>(`/api/positions/${positionId}/risk`, { method: "PATCH", body: JSON.stringify(payload) }),
-  cancelOrder: (orderId: string) => fetchJson<Order>(`/api/orders/${orderId}`, { method: "DELETE" }),
-  order: (payload: { symbol: string; side: OrderSide; type: OrderType; amount: number; amountUnit: AmountUnit; price?: number; leverage: number }) =>
+  account: (accountId?: string) => accountId ? fetchJson<AccountSnapshot>(`/api/accounts/${accountId}/snapshot`) : fetchJson<AccountSnapshot>("/api/account"),
+  accountStats: (accountId?: string) => fetchJson<AccountStats>(`/api/account/stats${accountId ? `?${accountQuery(accountId)}` : ""}`),
+  orders: (accountId: string, page: number, pageSize: number) => fetchJson<Paginated<Order>>(`/api/orders/history?${accountQuery(accountId)}&page=${page}&pageSize=${pageSize}`),
+  positionHistory: (accountId: string, page: number, pageSize: number) => fetchJson<Paginated<Position>>(`/api/positions/history?${accountQuery(accountId)}&page=${page}&pageSize=${pageSize}`),
+  updatePositionRisk: (accountId: string, positionId: string, payload: { takeProfitPrice?: number | null; stopLossPrice?: number | null }) =>
+    fetchJson<AccountSnapshot>(`/api/positions/${positionId}/risk?${accountQuery(accountId)}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  cancelOrder: (accountId: string, orderId: string) => fetchJson<Order>(`/api/orders/${orderId}?${accountQuery(accountId)}`, { method: "DELETE" }),
+  order: (payload: { accountId: string; clientOrderId: string; symbol: string; side: OrderSide; type: OrderType; amount: number; amountUnit: AmountUnit; price?: number; leverage: number }) =>
     fetchJson<Order>("/api/orders", {
       method: "POST",
       body: JSON.stringify(payload)

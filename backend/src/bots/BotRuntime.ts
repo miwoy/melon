@@ -45,9 +45,7 @@ export class BotRuntime {
         stop: async (reason) => {
           await this.accountManager.stopBot(account.id, reason, "ended");
         },
-        log: async (message, data) => {
-          console.log(`[bot:${account.id}] ${message}`, data ?? "");
-        }
+        log: async () => {}
       };
       await definition.onTick(context);
     } finally {

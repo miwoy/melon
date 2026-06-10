@@ -49,6 +49,7 @@ export type Position = {
 
 export type Order = {
   id: string;
+  clientOrderId?: string;
   symbol: string;
   side: OrderSide;
   type: OrderType;
@@ -137,6 +138,7 @@ export type CreateOrderRequest = {
   leverage: number;
   amountUnit?: AmountUnit;
   accountId?: string;
+  clientOrderId?: string;
 };
 
 export type BotConfigField = {
@@ -180,15 +182,6 @@ export type UpdatePositionRiskRequest = {
   positionId: string;
   takeProfitPrice?: number | null;
   stopLossPrice?: number | null;
-};
-
-export type StrategyConfig = {
-  enabled: boolean;
-  symbol: string;
-  shortWindow: number;
-  longWindow: number;
-  tradeAmount: number;
-  accountId?: string;
 };
 
 export type TradingAccount = {

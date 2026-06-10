@@ -67,6 +67,7 @@ model Position {
 
 model Order {
   id        String   @id
+  clientOrderId String?
   accountId String
   symbol    String
   side      String
@@ -90,6 +91,7 @@ model Order {
 
   @@index([accountId, createdAt])
   @@index([positionId])
+  @@unique([accountId, clientOrderId])
 }
 
 model AccountEquityEvent {
@@ -111,15 +113,4 @@ model AccountEquityEvent {
   account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@index([accountId, createdAt])
-}
-
-model StrategySetting {
-  id          String   @id @default(cuid())
-  enabled     Boolean  @default(false)
-  symbol      String
-  shortWindow Int
-  longWindow  Int
-  tradeAmount Float
-  accountId   String?
-  updatedAt   DateTime @updatedAt
 }

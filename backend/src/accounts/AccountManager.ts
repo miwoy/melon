@@ -92,10 +92,6 @@ export class AccountManager {
     const account = await prisma.account.findUnique({ where: { id: accountId }, include: accountInclude });
     if (!account) throw new Error("账户不存在");
     if (account.archivedAt) throw new Error("账户已归档");
-    await prisma.$transaction([
-      prisma.account.updateMany({ data: { isActive: false } }),
-      prisma.account.update({ where: { id: accountId }, data: { isActive: true } })
-    ]);
     this.activeAccountId = accountId;
     if (account.kind === "paper" && !this.paperBrokers.has(account.id)) this.loadPaperBroker(account);
     return this.snapshot();
@@ -147,8 +143,8 @@ export class AccountManager {
     };
   }
 
-  async paginatedOrders(input: { page: number; pageSize: number }): Promise<Paginated<Order>> {
-    const accountId = this.activeAccountId;
+  async paginatedOrders(input: { accountId?: string; page: number; pageSize: number }): Promise<Paginated<Order>> {
+    const accountId = input.accountId ?? this.activeAccountId;
     const page = Math.max(0, input.page);
     const pageSize = normalizePageSize(input.pageSize);
     const [total, orders] = await prisma.$transaction([
@@ -163,8 +159,8 @@ export class AccountManager {
     return paginated(orders.map(deserializeOrder), page, pageSize, total);
   }
 
-  async paginatedPositionHistory(input: { page: number; pageSize: number }): Promise<Paginated<Position>> {
-    const accountId = this.activeAccountId;
+  async paginatedPositionHistory(input: { accountId?: string; page: number; pageSize: number }): Promise<Paginated<Position>> {
+    const accountId = input.accountId ?? this.activeAccountId;
     const page = Math.max(0, input.page);
     const pageSize = normalizePageSize(input.pageSize);
     const where = {
@@ -204,16 +200,17 @@ export class AccountManager {
     };
   }
 
-  async updateTicker(ticker: Ticker): Promise<Order[]> {
+  async updateTicker(ticker: Ticker): Promise<{ orders: Order[]; accountIds: string[] }> {
     const changed: Order[] = [];
     for (const broker of this.paperBrokers.values()) {
       const filled = broker.updateTicker(ticker);
       changed.push(...filled);
     }
-    for (const order of changed) {
-      await this.persistPaperState(order.accountId);
+    const accountIds = [...new Set(changed.map((order) => order.accountId))];
+    for (const accountId of accountIds) {
+      await this.persistPaperState(accountId);
     }
-    return changed;
+    return { orders: changed, accountIds };
   }
 
   seedTickers(tickers: Ticker[]) {
@@ -349,6 +346,8 @@ export class AccountManager {
     const broker = this.paperBrokers.get(accountId);
     if (!broker) return;
     const snapshot = broker.snapshot();
+    const positions = broker.persistencePositions();
+    const orders = broker.persistenceOrders();
     await prisma.$transaction(async (tx) => {
       await tx.account.update({
         where: { id: accountId },
@@ -358,17 +357,23 @@ export class AccountManager {
           totalFees: snapshot.totalFees
         }
       });
-      await tx.position.deleteMany({ where: { accountId } });
-      for (const position of broker.persistencePositions()) {
-        await tx.position.create({ data: position });
+      for (const position of positions) {
+        await tx.position.upsert({
+          where: { id: position.id },
+          update: position,
+          create: position
+        });
       }
+      const closingOrderIds = orders.filter((order) => order.closeAmount > 0).map((order) => order.id);
       const existingEvents = new Map(
-        (await tx.accountEquityEvent.findMany({
-          where: { accountId },
-          select: { orderId: true, closeAmount: true }
-        })).map((event) => [event.orderId, event.closeAmount])
+        closingOrderIds.length === 0
+          ? []
+          : (await tx.accountEquityEvent.findMany({
+              where: { accountId, orderId: { in: closingOrderIds } },
+              select: { orderId: true, closeAmount: true }
+            })).map((event) => [event.orderId, event.closeAmount])
       );
-      for (const order of broker.persistenceOrders()) {
+      for (const order of orders) {
         await tx.order.upsert({
           where: { id: order.id },
           update: serializeOrder(order),
@@ -530,6 +535,7 @@ function paginated<T>(items: T[], page: number, pageSize: number, total: number)
 function serializeOrder(order: Order) {
   return {
     id: order.id,
+    clientOrderId: order.clientOrderId,
     accountId: order.accountId,
     symbol: order.symbol,
     side: order.side,
@@ -555,6 +561,7 @@ function serializeOrder(order: Order) {
 function deserializeOrder(order: DbOrder): Order {
   return {
     id: order.id,
+    clientOrderId: order.clientOrderId ?? undefined,
     accountId: order.accountId,
     symbol: order.symbol,
     side: order.side as Order["side"],

@@ -5,10 +5,10 @@
 - `ccxt` 统一交易所适配
 - 永续合约模拟盘撮合与账户、仓位、订单账本
 - 杠杆、保证金、手续费、市价单、限价单
-- 多账户：模拟账户和真实账户分离，可切换当前账户
-- SQLite 持久化账户、持仓、订单和策略配置
-- 可插拔策略引擎
-- WebSocket 行情、账户和策略状态推送
+- 多账户：模拟账户和真实账户分离，前端本地选择当前账户
+- SQLite 持久化账户、持仓、订单、平仓事件和机器人参数
+- 机器人账户抽象，当前内置随机交易机器人
+- WebSocket 行情和账户状态推送
 - React 前端账户与仓位看板
 
 ## 快速开始
@@ -49,9 +49,9 @@ AUTH_TOKEN_TTL_SECONDS=43200
 2. 给 API key 设置最小权限。
 3. 增加风控：最大仓位、最大日亏、滑点限制、熔断、审计日志。
 
-## 策略开发
+## 机器人开发
 
-当前内置 `MovingAverageCrossStrategy` 示例策略。你可以在 `backend/src/strategies` 中新增策略，只要实现 `Strategy` 接口即可。
+策略交易以“机器人账户”的方式接入。机器人必须绑定一个账户，账户创建后按机器人类型加载参数并运行。当前内置随机交易机器人，后续新增网格、浮盈加仓、AI 辅助等策略时，应在 `backend/src/bots` 下实现机器人定义，并通过 `BotRegistry` 注册。
 
 ## 模拟盘合约规则
 
@@ -72,7 +72,7 @@ backend/src
 ├── broker              # 模拟盘账户、仓位和订单
 ├── exchange            # ccxt 交易所适配
 ├── market              # 币安原生 WebSocket 行情
-├── strategies          # 策略接口与示例策略
+├── bots                # 机器人抽象与具体机器人定义
 ├── ws                  # 前端事件推送
 └── server.ts           # REST API 和服务装配
 frontend/src
@@ -86,17 +86,21 @@ frontend/src
 - `GET /api/symbols`
 - `GET /api/accounts`
 - `POST /api/accounts`
-- `PUT /api/accounts/active`
+- `GET /api/accounts/:id/snapshot`
 - `GET /api/tickers`
 - `GET /api/account`
+- `GET /api/account/stats`
 - `POST /api/orders`
-- `GET /api/strategy`
-- `PUT /api/strategy`
+- `DELETE /api/orders/:id`
+- `GET /api/orders/history`
+- `GET /api/positions/history`
+- `GET /api/bots/definitions`
+- `POST /api/bots/stop`
 - `GET /ws`
 
 ## 建议的下一阶段
 
-- 增加持久化：PostgreSQL/SQLite 记录订单、成交、净值曲线和策略参数。
-- 增加回测模块：复用同一套 `Strategy` 接口，用历史 K 线驱动策略。
+- 增加 PostgreSQL 部署选项，支撑更高频的机器人交易和更长历史数据。
+- 增加回测模块：复用机器人定义中的信号与风控逻辑，用历史 K 线驱动验证。
 - 增加风控模块：最大下单金额、最大持仓、最大回撤、连续亏损暂停。
 - 增加币安合约或杠杆适配时单独建执行器，不要和现货混用。

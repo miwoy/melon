@@ -21,6 +21,10 @@ const emptyAccount: AccountSnapshot = {
 
 const PAGE_SIZE = 10;
 const TAKER_FEE_RATE = 0.0005;
+const WS_RECONNECT_MS = 3000;
+const ACCOUNT_SWITCH_GUARD_MS = 1500;
+const BOT_RUNTIME_TICK_MS = 1000;
+const SELECTED_ACCOUNT_STORAGE_KEY = "melon_selected_account_id";
 const defaultRandomBotConfig: RandomBotConfig = {
   symbol: "BTC/USDT",
   direction: "both",
@@ -76,6 +80,7 @@ function App() {
   const [authorized, setAuthorized] = useState(false);
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
   const accountSwitchGuard = useRef({ accountId: "", until: 0 });
 
   useEffect(() => {
@@ -90,22 +95,26 @@ function App() {
 
   useEffect(() => {
     if (!authorized) return;
-    Promise.all([api.symbols(), api.botDefinitions(), api.accounts(), api.tickers(), api.account()]).then(
-      ([symbolsRes, botDefsRes, accountsRes, tickerRes, accountRes]) => {
+    Promise.all([api.symbols(), api.botDefinitions(), api.accounts(), api.tickers()]).then(
+      async ([symbolsRes, botDefsRes, accountsRes, tickerRes]) => {
         setSymbols(symbolsRes.symbols);
         setBotDefinitions(botDefsRes.items);
         const randomDef = botDefsRes.items.find((item) => item.type === "random");
         if (randomDef) setNewBotConfig({ ...randomDef.defaultConfig, symbol: symbolsRes.symbols[0] ?? randomDef.defaultConfig.symbol });
-        setAccounts(accountsRes);
+        const storedAccountId = sessionStorage.getItem(SELECTED_ACCOUNT_STORAGE_KEY);
+        const selectedAccount = accountsRes.find((item) => item.id === storedAccountId) ?? accountsRes.find((item) => item.isActive) ?? accountsRes[0];
+        const accountRes = selectedAccount ? await api.account(selectedAccount.id) : await api.account();
+        setAccounts(accountsRes.map((item) => ({ ...item, isActive: item.id === accountRes.accountId })));
         setSelectedSymbol(symbolsRes.symbols[0] ?? "BTC/USDT");
         setTickers(tickerRes);
         setAccount(accountRes);
+        sessionStorage.setItem(SELECTED_ACCOUNT_STORAGE_KEY, accountRes.accountId);
       }
     ).catch(handleAuthError);
   }, [authorized]);
 
   useEffect(() => {
-    if (!authorized) return;
+    if (!authorized || !account.accountId) return;
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     let ws: WebSocket | undefined;
     let reconnectTimer: number | undefined;
@@ -113,7 +122,10 @@ function App() {
 
     const connect = () => {
       const token = getAuthToken();
-      ws = new WebSocket(`${protocol}://${window.location.host}/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`);
+      const params = new URLSearchParams();
+      if (token) params.set("token", token);
+      params.set("accountId", account.accountId);
+      ws = new WebSocket(`${protocol}://${window.location.host}/ws?${params.toString()}`);
       ws.onopen = () => setConnection("实时连接");
       ws.onclose = (event) => {
         if (event.code === 1008) {
@@ -123,7 +135,7 @@ function App() {
           return;
         }
         setConnection("正在重连");
-        if (!stopped) reconnectTimer = window.setTimeout(connect, 3000);
+        if (!stopped) reconnectTimer = window.setTimeout(connect, WS_RECONNECT_MS);
       };
       ws.onerror = () => {
         setConnection("连接异常");
@@ -153,7 +165,7 @@ function App() {
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       ws?.close();
     };
-  }, [authorized]);
+  }, [authorized, account.accountId]);
 
   const tickerRows = useMemo(() => Object.values(tickers).sort((a, b) => a.symbol.localeCompare(b.symbol)), [tickers]);
   const openPositions = useMemo(() => account.positions.filter((position) => position.status === "open"), [account.positions]);
@@ -204,6 +216,8 @@ function App() {
     setOrderSubmitting(true);
     try {
       const order = await api.order({
+        accountId: account.accountId,
+        clientOrderId: createClientOrderId(account.accountId),
         symbol: selectedSymbol,
         side: pendingOrder.side,
         type: orderType,
@@ -212,10 +226,10 @@ function App() {
         price: orderType === "limit" ? Number(price) : undefined,
         leverage: Number(leverage)
       });
-      setAccount(await api.account());
+      setAccount(await api.account(account.accountId));
       setPendingOrder(null);
       setModal(null);
-      if (order.status === "rejected") console.warn(order.reason);
+      if (order.status === "rejected") setErrorMessage(order.reason ?? "下单被拒绝");
     } catch (error) {
       handleAuthError(error);
     } finally {
@@ -225,11 +239,12 @@ function App() {
 
   async function switchAccount(accountId: string) {
     try {
-      accountSwitchGuard.current = { accountId, until: Date.now() + 3000 };
-      const snapshot = await api.switchAccount(accountId);
+      accountSwitchGuard.current = { accountId, until: Date.now() + ACCOUNT_SWITCH_GUARD_MS };
+      const snapshot = await api.account(accountId);
       setAccount(snapshot);
       setAccounts((current) => current.map((item) => ({ ...item, isActive: item.id === accountId })));
-      accountSwitchGuard.current = { accountId, until: Date.now() + 2000 };
+      sessionStorage.setItem(SELECTED_ACCOUNT_STORAGE_KEY, accountId);
+      accountSwitchGuard.current = { accountId, until: Date.now() + ACCOUNT_SWITCH_GUARD_MS };
     } catch (error) {
       accountSwitchGuard.current = { accountId: "", until: 0 };
       handleAuthError(error);
@@ -291,6 +306,8 @@ function App() {
     const finalAmount = parsedAmount >= closePosition.amount ? closePosition.amount : roundAmount(parsedAmount);
     try {
       await api.order({
+        accountId: account.accountId,
+        clientOrderId: createClientOrderId(account.accountId),
         symbol: closePosition.symbol,
         side: closePosition.side === "long" ? "sell" : "buy",
         type: "market",
@@ -298,7 +315,7 @@ function App() {
         amountUnit: "base",
         leverage: closePosition.leverage
       });
-      setAccount(await api.account());
+      setAccount(await api.account(account.accountId));
       setModal(null);
       setClosePosition(null);
     } catch (error) {
@@ -309,7 +326,7 @@ function App() {
   async function savePositionRisk() {
     if (!riskPosition) return;
     try {
-      const snapshot = await api.updatePositionRisk(riskPosition.id, {
+      const snapshot = await api.updatePositionRisk(account.accountId, riskPosition.id, {
         takeProfitPrice: parseOptionalPositive(takeProfitPrice),
         stopLossPrice: parseOptionalPositive(stopLossPrice)
       });
@@ -324,14 +341,14 @@ function App() {
   async function cancelCurrentOrder(item: CurrentOrderItem) {
     try {
       if (item.kind === "limit") {
-        await api.cancelOrder(item.order.id);
+        await api.cancelOrder(account.accountId, item.order.id);
       } else {
-        await api.updatePositionRisk(item.position.id, {
+        await api.updatePositionRisk(account.accountId, item.position.id, {
           takeProfitPrice: item.kind === "takeProfit" ? null : item.position.takeProfitPrice ?? null,
           stopLossPrice: item.kind === "stopLoss" ? null : item.position.stopLossPrice ?? null
         });
       }
-      setAccount(await api.account());
+      setAccount(await api.account(account.accountId));
     } catch (error) {
       handleAuthError(error);
     }
@@ -339,7 +356,7 @@ function App() {
 
   async function stopBot() {
     try {
-      const snapshot = await api.stopBot();
+      const snapshot = await api.stopBot(account.accountId);
       setAccount(snapshot);
       setAccounts((current) => current.map((item) => item.id === snapshot.accountId ? { ...item, botStatus: snapshot.botStatus, botStartedAt: snapshot.botStartedAt, botStoppedAt: snapshot.botStoppedAt } : item));
     } catch (error) {
@@ -388,7 +405,7 @@ function App() {
       setLoginError("登录已过期，请重新登录");
       return;
     }
-    console.error(error);
+    setErrorMessage(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "操作失败");
   }
 
   if (!authReady) return <main><div className="login-card"><h1>蜜瓜交易系统</h1><p>正在检查授权状态</p></div></main>;
@@ -416,6 +433,7 @@ function App() {
         <Metric icon={<Archive />} label="累计手续费" value={money(account.totalFees)} />
       </section>
       <section className="account-actions">
+        {errorMessage && <div className="inline-error"><span>{errorMessage}</span><button className="icon-button compact" onClick={() => setErrorMessage("")} title="关闭"><X size={15} /></button></div>}
         <button className="ghost" onClick={() => setModal("stats")}><BarChart3 size={16} />账户统计</button>
         <button className="ghost" title={accountActionDisabledReason} disabled={!canArchiveOrDeleteAccount} onClick={() => openAccountAction("archive")}><Archive size={16} />归档账户</button>
         <button className="ghost danger" title={accountActionDisabledReason} disabled={!canArchiveOrDeleteAccount} onClick={() => openAccountAction("delete")}><Trash2 size={16} />删除账户</button>
@@ -500,7 +518,7 @@ function BotAccountPanel({ account, onStop }: { account: AccountSnapshot; onStop
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (account.botStatus !== "running") return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    const timer = window.setInterval(() => setNow(Date.now()), BOT_RUNTIME_TICK_MS);
     return () => window.clearInterval(timer);
   }, [account.botStatus, account.botStartedAt]);
   const runtimeEnd = account.botStatus === "running" ? now : account.botStoppedAt ?? now;
@@ -729,7 +747,7 @@ function AccountStatsView({ accountId }: { accountId: string }) {
   const [stats, setStats] = useState<AccountStats | null>(null);
   useEffect(() => {
     setStats(null);
-    api.accountStats().then(setStats);
+    api.accountStats(accountId).then(setStats);
   }, [accountId]);
   if (!stats) return <EmptyState text="正在加载账户统计" />;
   if (stats.totalTrades === 0) return <EmptyState text="暂无平仓事件，完成平仓后会生成统计" />;
@@ -789,7 +807,7 @@ function PositionHistory({ accountId }: { accountId: string }) {
   const [data, setData] = useState<Paginated<Position> | null>(null);
   useEffect(() => {
     setData(null);
-    api.positionHistory(page, PAGE_SIZE).then(setData);
+    api.positionHistory(accountId, page, PAGE_SIZE).then(setData);
   }, [accountId, page]);
   if (!data) return <EmptyState text="正在加载仓位历史" />;
   if (data.total === 0) return <EmptyState text="暂无已平仓或部分平仓记录" />;
@@ -801,7 +819,7 @@ function OrderHistory({ accountId }: { accountId: string }) {
   const [data, setData] = useState<Paginated<Order> | null>(null);
   useEffect(() => {
     setData(null);
-    api.orders(page, PAGE_SIZE).then(setData);
+    api.orders(accountId, page, PAGE_SIZE).then(setData);
   }, [accountId, page]);
   if (!data) return <EmptyState text="正在加载订单" />;
   if (data.total === 0) return <EmptyState text="暂无订单" />;
@@ -1040,6 +1058,11 @@ function formatAmountInput(value: number) {
 function clampPercent(value: number) {
   if (!Number.isFinite(value)) return 0;
   return Math.min(Math.max(value, 0), 100);
+}
+
+function createClientOrderId(accountId: string) {
+  const random = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `manual-${accountId}-${random}`;
 }
 
 function parseOptionalPositive(value: string) {

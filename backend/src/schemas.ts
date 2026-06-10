@@ -12,7 +12,8 @@ export const createOrderSchema = z.object({
   amountUnit: z.enum(["base", "quote"]).default("base"),
   price: z.number().positive().optional(),
   leverage: z.number().int().min(1).max(125).default(1),
-  accountId: z.string().optional()
+  accountId: z.string().optional(),
+  clientOrderId: z.string().min(8).max(120).optional()
 }).refine((order) => order.type === "market" || order.price !== undefined, {
   message: "限价单必须填写价格",
   path: ["price"]
@@ -55,6 +56,10 @@ export const createAccountSchema = z.object({
 
 export const switchAccountSchema = z.object({
   accountId: z.string().min(1)
+});
+
+export const accountQuerySchema = z.object({
+  accountId: z.string().min(1).optional()
 });
 
 export const positionRiskSchema = z.object({
