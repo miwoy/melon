@@ -7,3 +7,4 @@ dist
 backups/
 backend/prisma/dev.db
 backend/prisma/dev.db-journal
+backend/data/

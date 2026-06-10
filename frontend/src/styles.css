@@ -113,9 +113,30 @@ p {
 
 .account-actions {
   display: flex;
+  align-items: center;
+  gap: 8px;
   justify-content: flex-end;
   max-width: 1440px;
   margin: -4px auto 12px;
+}
+
+.inline-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  max-width: min(540px, 100%);
+  border: 1px solid #80333f;
+  border-radius: 8px;
+  padding: 6px 8px 6px 12px;
+  margin-right: auto;
+  background: #251116;
+  color: #ffb3bd;
+  font-size: 13px;
+}
+
+.inline-error span {
+  overflow-wrap: anywhere;
 }
 
 .metric,
@@ -298,6 +319,46 @@ select.invalid {
   background: #0c131a;
 }
 
+.bot-status-card {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.bot-status-card > div {
+  min-width: 0;
+  border: 1px solid #1b2734;
+  border-radius: 6px;
+  padding: 10px;
+  background: #0c131a;
+}
+
+.bot-status-card span,
+.bot-config-list dt {
+  display: block;
+  color: #91a2b6;
+  font-size: 12px;
+}
+
+.bot-status-card strong {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.bot-config-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.bot-form {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid #1b2734;
+  padding-top: 12px;
+}
+
 .trade-quote span,
 .position-focus span {
   display: block;
@@ -352,6 +413,11 @@ button.ghost {
   color: #d7e3f3;
   border: 1px solid #263445;
   background: #0b1118;
+}
+
+button.ghost.danger {
+  color: #ffb2b2;
+  border-color: #693030;
 }
 
 .icon-button {
@@ -525,6 +591,14 @@ dd {
   overflow: hidden;
   padding: 14px;
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-body {
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 2px;
 }
 
 .modal .table-scroll {
@@ -538,6 +612,13 @@ dd {
 
 .modal-form {
   max-width: 440px;
+}
+
+.modal-form .form-submit {
+  position: sticky;
+  bottom: 0;
+  margin-top: 4px;
+  box-shadow: 0 -12px 22px #0f1720;
 }
 
 .modal-tabs {
@@ -675,6 +756,17 @@ dd {
   min-width: 0;
 }
 
+.confirm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.confirm-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
 .pagination {
   display: flex;
   align-items: center;
@@ -751,12 +843,14 @@ dd {
   }
 
   .account-actions {
-    justify-content: stretch;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     margin: -2px 0 10px;
   }
 
   .account-actions button {
     width: 100%;
+    min-width: 0;
   }
 
   .metric {
@@ -858,6 +952,15 @@ dd {
   .position-focus,
   dl {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .bot-status-card {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .bot-status-card > div {
+    padding: 8px;
   }
 
   .stats-grid {

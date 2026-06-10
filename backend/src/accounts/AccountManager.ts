@@ -2,7 +2,9 @@ import type { Account, AccountEquityEvent as DbAccountEquityEvent, Order as DbOr
 import { config } from "../config.js";
 import { prisma } from "../db.js";
 import { PaperBroker } from "../broker/PaperBroker.js";
-import type { AccountEquityEvent, AccountKind, AccountSnapshot, AccountStats, CreateOrderRequest, Order, Paginated, Position, Ticker, TradingAccount, UpdatePositionRiskRequest } from "../types.js";
+import { randomBotDefinition } from "../bots/definitions/RandomBot.js";
+import type { BotAccountRecord } from "../bots/types.js";
+import type { AccountEquityEvent, AccountKind, AccountMode, AccountSnapshot, AccountStats, BotStatus, BotType, CreateOrderRequest, Order, Paginated, Position, RandomBotConfig, RandomBotState, Ticker, TradingAccount, UpdatePositionRiskRequest } from "../types.js";
 
 type LoadedAccount = Account & {
   positions: DbPosition[];
@@ -19,43 +21,64 @@ export class AccountManager {
   private readonly paperBrokers = new Map<string, PaperBroker>();
 
   async initialize() {
-    const count = await prisma.account.count();
+    const count = await prisma.account.count({ where: { archivedAt: null } });
     if (count === 0) {
       await prisma.account.create({
         data: {
           name: "默认模拟账户",
           kind: "paper",
+          mode: "manual",
           cash: config.paperStartingCash,
           isActive: true
         }
       });
     }
 
-    const accounts = await prisma.account.findMany({ include: accountInclude });
+    const accounts = await prisma.account.findMany({ where: { archivedAt: null }, include: accountInclude });
     const active = accounts.find((account) => account.isActive) ?? accounts[0];
     this.activeAccountId = active.id;
+    if (!active.isActive) {
+      await prisma.$transaction([
+        prisma.account.updateMany({ data: { isActive: false } }),
+        prisma.account.update({ where: { id: active.id }, data: { isActive: true } })
+      ]);
+    }
     for (const account of accounts) {
       if (account.kind === "paper") this.loadPaperBroker(account);
     }
   }
 
   async list(): Promise<TradingAccount[]> {
-    const accounts = await prisma.account.findMany({ orderBy: { createdAt: "asc" } });
+    const accounts = await prisma.account.findMany({ where: { archivedAt: null }, orderBy: { createdAt: "asc" } });
     return accounts.map((account) => ({
       id: account.id,
       name: account.name,
       kind: account.kind as AccountKind,
+      mode: account.mode as AccountMode,
+      botType: account.botType as BotType | undefined,
+      botStatus: account.botStatus as BotStatus | undefined,
+      botStartedAt: account.startedAt?.getTime(),
+      botStoppedAt: account.stoppedAt?.getTime(),
       isActive: account.id === this.activeAccountId,
       cash: account.cash,
       createdAt: account.createdAt.getTime()
     }));
   }
 
-  async create(input: { name: string; kind: AccountKind; startingCash?: number }) {
+  async create(input: { name: string; kind: AccountKind; mode?: AccountMode; botType?: BotType; botConfig?: RandomBotConfig; startingCash?: number }) {
+    const mode = input.mode ?? "manual";
+    const botConfig = mode === "bot" ? input.botConfig ?? randomBotDefinition.defaultConfig : undefined;
+    const botState = mode === "bot" ? randomBotDefinition.createInitialState(botConfig ?? randomBotDefinition.defaultConfig) : undefined;
     const account = await prisma.account.create({
       data: {
         name: input.name,
         kind: input.kind,
+        mode,
+        botType: mode === "bot" ? input.botType ?? "random" : null,
+        botStatus: mode === "bot" ? "running" : null,
+        botConfig: botConfig ?? undefined,
+        botState: botState ?? undefined,
+        startedAt: mode === "bot" ? new Date() : null,
         cash: input.kind === "paper" ? input.startingCash ?? config.paperStartingCash : 0,
         isActive: false
       },
@@ -68,10 +91,7 @@ export class AccountManager {
   async switch(accountId: string) {
     const account = await prisma.account.findUnique({ where: { id: accountId }, include: accountInclude });
     if (!account) throw new Error("账户不存在");
-    await prisma.$transaction([
-      prisma.account.updateMany({ data: { isActive: false } }),
-      prisma.account.update({ where: { id: accountId }, data: { isActive: true } })
-    ]);
+    if (account.archivedAt) throw new Error("账户已归档");
     this.activeAccountId = accountId;
     if (account.kind === "paper" && !this.paperBrokers.has(account.id)) this.loadPaperBroker(account);
     return this.snapshot();
@@ -84,20 +104,35 @@ export class AccountManager {
   async activeAccount() {
     const account = await prisma.account.findUnique({ where: { id: this.activeAccountId } });
     if (!account) throw new Error("当前账户不存在");
+    if (account.archivedAt) throw new Error("当前账户已归档");
     return account;
   }
 
   async snapshot(): Promise<AccountSnapshot> {
-    const account = await this.activeAccount();
+    return this.snapshotFor(this.activeAccountId);
+  }
+
+  async snapshotFor(accountId: string): Promise<AccountSnapshot> {
+    const account = await prisma.account.findUnique({ where: { id: accountId } });
+    if (!account) throw new Error("账户不存在");
+    if (account.archivedAt) throw new Error("账户已归档");
     if (account.kind === "paper") {
       const broker = this.paperBrokers.get(account.id);
       if (!broker) throw new Error("模拟账户未加载");
-      return broker.snapshot();
+      return withAccountMeta(broker.snapshot(), account);
     }
     return {
       accountId: account.id,
       accountName: account.name,
       accountKind: "live",
+      accountMode: account.mode as AccountMode,
+      botType: account.botType as BotType | undefined,
+      botStatus: account.botStatus as BotStatus | undefined,
+      botConfig: parseBotConfig(account.botConfig),
+      botState: parseBotState(account.botState),
+      botStartedAt: account.startedAt?.getTime(),
+      botStoppedAt: account.stoppedAt?.getTime(),
+      stopReason: account.stopReason ?? undefined,
       cash: account.cash,
       equity: account.cash,
       usedMargin: 0,
@@ -108,8 +143,8 @@ export class AccountManager {
     };
   }
 
-  async paginatedOrders(input: { page: number; pageSize: number }): Promise<Paginated<Order>> {
-    const accountId = this.activeAccountId;
+  async paginatedOrders(input: { accountId?: string; page: number; pageSize: number }): Promise<Paginated<Order>> {
+    const accountId = input.accountId ?? this.activeAccountId;
     const page = Math.max(0, input.page);
     const pageSize = normalizePageSize(input.pageSize);
     const [total, orders] = await prisma.$transaction([
@@ -124,8 +159,8 @@ export class AccountManager {
     return paginated(orders.map(deserializeOrder), page, pageSize, total);
   }
 
-  async paginatedPositionHistory(input: { page: number; pageSize: number }): Promise<Paginated<Position>> {
-    const accountId = this.activeAccountId;
+  async paginatedPositionHistory(input: { accountId?: string; page: number; pageSize: number }): Promise<Paginated<Position>> {
+    const accountId = input.accountId ?? this.activeAccountId;
     const page = Math.max(0, input.page);
     const pageSize = normalizePageSize(input.pageSize);
     const where = {
@@ -144,8 +179,7 @@ export class AccountManager {
     return paginated(positions.map(deserializePosition), page, pageSize, total);
   }
 
-  async accountStats(): Promise<AccountStats> {
-    const accountId = this.activeAccountId;
+  async accountStats(accountId = this.activeAccountId): Promise<AccountStats> {
     const events = (await prisma.accountEquityEvent.findMany({
       where: { accountId },
       orderBy: { createdAt: "asc" }
@@ -166,16 +200,17 @@ export class AccountManager {
     };
   }
 
-  async updateTicker(ticker: Ticker): Promise<Order[]> {
+  async updateTicker(ticker: Ticker): Promise<{ orders: Order[]; accountIds: string[] }> {
     const changed: Order[] = [];
     for (const broker of this.paperBrokers.values()) {
       const filled = broker.updateTicker(ticker);
       changed.push(...filled);
     }
-    for (const order of changed) {
-      await this.persistPaperState(order.accountId);
+    const accountIds = [...new Set(changed.map((order) => order.accountId))];
+    for (const accountId of accountIds) {
+      await this.persistPaperState(accountId);
     }
-    return changed;
+    return { orders: changed, accountIds };
   }
 
   seedTickers(tickers: Ticker[]) {
@@ -194,7 +229,11 @@ export class AccountManager {
   }
 
   async cancelPaperOrder(orderId: string) {
-    const broker = this.paperBrokers.get(this.activeAccountId);
+    return this.cancelPaperOrderForAccount(this.activeAccountId, orderId);
+  }
+
+  async cancelPaperOrderForAccount(accountId: string, orderId: string) {
+    const broker = this.paperBrokers.get(accountId);
     if (!broker) throw new Error("模拟账户不存在");
     const order = broker.cancelOrder(orderId);
     if (!order) throw new Error("委托不存在或不可取消");
@@ -203,11 +242,103 @@ export class AccountManager {
   }
 
   async updatePaperPositionRisk(input: UpdatePositionRiskRequest) {
-    const broker = this.paperBrokers.get(this.activeAccountId);
+    return this.updatePaperPositionRiskForAccount(this.activeAccountId, input);
+  }
+
+  async updatePaperPositionRiskForAccount(accountId: string, input: UpdatePositionRiskRequest) {
+    const broker = this.paperBrokers.get(accountId);
     if (!broker) throw new Error("模拟账户不存在");
     const position = broker.updatePositionRisk(input.positionId, input);
     if (!position) throw new Error("仓位不存在");
-    await this.persistPaperState(this.activeAccountId);
+    await this.persistPaperState(accountId);
+    return this.snapshotFor(accountId);
+  }
+
+  async runningBotAccounts(symbol?: string): Promise<BotAccountRecord[]> {
+    const accounts = await prisma.account.findMany({
+      where: {
+        kind: "paper",
+        mode: "bot",
+        botStatus: "running",
+        archivedAt: null,
+        botType: { not: null }
+      }
+    });
+    return accounts
+      .map((account) => ({
+        id: account.id,
+        name: account.name,
+        botType: account.botType as BotType,
+        botStatus: account.botStatus as BotStatus,
+        botConfig: parseBotConfig(account.botConfig) ?? randomBotDefinition.defaultConfig,
+        botState: parseBotState(account.botState) ?? randomBotDefinition.createInitialState(randomBotDefinition.defaultConfig),
+        stopReason: account.stopReason ?? undefined
+      }))
+      .filter((account) => !symbol || account.botConfig.symbol === symbol);
+  }
+
+  async updateBotState(accountId: string, state: RandomBotState) {
+    await prisma.account.update({
+      where: { id: accountId },
+      data: { botState: state }
+    });
+  }
+
+  async stopBot(accountId: string, reason: string, status: BotStatus = "stopped") {
+    const existing = await prisma.account.findUnique({ where: { id: accountId } });
+    if (!existing) throw new Error("账户不存在");
+    if (existing.mode !== "bot") throw new Error("当前账户不是机器人账户");
+
+    const account = await prisma.account.update({
+      where: { id: accountId },
+      data: {
+        botStatus: status,
+        stoppedAt: new Date(),
+        stopReason: reason
+      }
+    });
+    const broker = this.paperBrokers.get(accountId);
+    if (broker) {
+      for (const order of broker.snapshot().orders) {
+        broker.cancelOrder(order.id);
+      }
+      await this.persistPaperState(accountId);
+    }
+    return account;
+  }
+
+  async archiveAccount(accountId: string) {
+    const account = await this.accountForRemoval(accountId);
+    if (account.mode === "bot") {
+      await this.stopAndCloseBotAccount(accountId, "账户已归档");
+    } else {
+      this.assertNoOpenPositions(accountId, "账户存在持仓，请先平仓后再归档");
+    }
+    await prisma.account.update({
+      where: { id: accountId },
+      data: {
+        archivedAt: new Date(),
+        isActive: false,
+        botStatus: account.mode === "bot" ? "stopped" : account.botStatus,
+        stoppedAt: account.mode === "bot" ? new Date() : account.stoppedAt,
+        stopReason: account.mode === "bot" ? "账户已归档" : account.stopReason
+      }
+    });
+    this.paperBrokers.delete(accountId);
+    if (account.id === this.activeAccountId) await this.activateFallbackAccount(accountId);
+    return this.snapshot();
+  }
+
+  async deleteAccount(accountId: string) {
+    const account = await this.accountForRemoval(accountId);
+    if (account.mode === "bot") {
+      await this.stopAndCloseBotAccount(accountId, "账户已删除");
+    } else {
+      this.assertNoOpenPositions(accountId, "账户存在持仓，请先平仓后再删除");
+    }
+    await prisma.account.delete({ where: { id: accountId } });
+    this.paperBrokers.delete(accountId);
+    if (account.id === this.activeAccountId) await this.activateFallbackAccount(accountId);
     return this.snapshot();
   }
 
@@ -215,6 +346,8 @@ export class AccountManager {
     const broker = this.paperBrokers.get(accountId);
     if (!broker) return;
     const snapshot = broker.snapshot();
+    const positions = broker.persistencePositions();
+    const orders = broker.persistenceOrders();
     await prisma.$transaction(async (tx) => {
       await tx.account.update({
         where: { id: accountId },
@@ -224,17 +357,23 @@ export class AccountManager {
           totalFees: snapshot.totalFees
         }
       });
-      await tx.position.deleteMany({ where: { accountId } });
-      for (const position of broker.persistencePositions()) {
-        await tx.position.create({ data: position });
+      for (const position of positions) {
+        await tx.position.upsert({
+          where: { id: position.id },
+          update: position,
+          create: position
+        });
       }
+      const closingOrderIds = orders.filter((order) => order.closeAmount > 0).map((order) => order.id);
       const existingEvents = new Map(
-        (await tx.accountEquityEvent.findMany({
-          where: { accountId },
-          select: { orderId: true, closeAmount: true }
-        })).map((event) => [event.orderId, event.closeAmount])
+        closingOrderIds.length === 0
+          ? []
+          : (await tx.accountEquityEvent.findMany({
+              where: { accountId, orderId: { in: closingOrderIds } },
+              select: { orderId: true, closeAmount: true }
+            })).map((event) => [event.orderId, event.closeAmount])
       );
-      for (const order of broker.persistenceOrders()) {
+      for (const order of orders) {
         await tx.order.upsert({
           where: { id: order.id },
           update: serializeOrder(order),
@@ -250,6 +389,80 @@ export class AccountManager {
         }
       }
     });
+  }
+
+  private async accountForRemoval(accountId: string) {
+    const account = await prisma.account.findUnique({ where: { id: accountId } });
+    if (!account || account.archivedAt) throw new Error("账户不存在");
+    const visibleCount = await prisma.account.count({ where: { archivedAt: null } });
+    if (visibleCount <= 1) throw new Error("至少需要保留一个账户");
+    return account;
+  }
+
+  private async activateFallbackAccount(excludedAccountId: string) {
+    const fallback = await prisma.account.findFirst({
+      where: { id: { not: excludedAccountId }, archivedAt: null },
+      orderBy: { createdAt: "asc" },
+      include: accountInclude
+    });
+    if (!fallback) throw new Error("至少需要保留一个账户");
+    await prisma.$transaction([
+      prisma.account.updateMany({ data: { isActive: false } }),
+      prisma.account.update({ where: { id: fallback.id }, data: { isActive: true } })
+    ]);
+    this.activeAccountId = fallback.id;
+    if (fallback.kind === "paper" && !this.paperBrokers.has(fallback.id)) this.loadPaperBroker(fallback);
+  }
+
+  private async cancelOpenOrders(accountId: string) {
+    const broker = this.paperBrokers.get(accountId);
+    if (!broker) return;
+    for (const order of broker.snapshot().orders) {
+      broker.cancelOrder(order.id);
+    }
+    await this.persistPaperState(accountId);
+  }
+
+  private assertNoOpenPositions(accountId: string, message: string) {
+    const broker = this.paperBrokers.get(accountId);
+    if (!broker) return;
+    if (broker.snapshot().positions.some((position) => position.status === "open" && position.amount > 0)) {
+      throw new Error(message);
+    }
+  }
+
+  private async stopAndCloseBotAccount(accountId: string, reason: string) {
+    await prisma.account.update({
+      where: { id: accountId },
+      data: {
+        botStatus: "stopped",
+        stoppedAt: new Date(),
+        stopReason: reason
+      }
+    });
+    await this.cancelOpenOrders(accountId);
+    await this.closeOpenPositions(accountId);
+  }
+
+  private async closeOpenPositions(accountId: string) {
+    const broker = this.paperBrokers.get(accountId);
+    if (!broker) return;
+    const positions = broker.snapshot().positions.filter((position) => position.status === "open" && position.amount > 0);
+    for (const position of positions) {
+      const order = broker.execute({
+        accountId,
+        symbol: position.symbol,
+        side: position.side === "long" ? "sell" : "buy",
+        type: "market",
+        amount: position.amount,
+        amountUnit: "base",
+        leverage: position.leverage
+      });
+      await this.persistPaperState(accountId);
+      if (order.status === "rejected") {
+        throw new Error(`无法自动平仓 ${position.symbol}: ${order.reason ?? "下单失败"}`);
+      }
+    }
   }
 
   private loadPaperBroker(account: LoadedAccount) {
@@ -322,6 +535,7 @@ function paginated<T>(items: T[], page: number, pageSize: number, total: number)
 function serializeOrder(order: Order) {
   return {
     id: order.id,
+    clientOrderId: order.clientOrderId,
     accountId: order.accountId,
     symbol: order.symbol,
     side: order.side,
@@ -347,6 +561,7 @@ function serializeOrder(order: Order) {
 function deserializeOrder(order: DbOrder): Order {
   return {
     id: order.id,
+    clientOrderId: order.clientOrderId ?? undefined,
     accountId: order.accountId,
     symbol: order.symbol,
     side: order.side as Order["side"],
@@ -405,6 +620,49 @@ function deserializeEquityEvent(event: DbAccountEquityEvent): AccountEquityEvent
     cash: event.cash,
     totalFees: event.totalFees,
     createdAt: event.createdAt.getTime()
+  };
+}
+
+function withAccountMeta(snapshot: AccountSnapshot, account: Account): AccountSnapshot {
+  return {
+    ...snapshot,
+    accountMode: account.mode as AccountMode,
+    botType: account.botType as BotType | undefined,
+    botStatus: account.botStatus as BotStatus | undefined,
+    botConfig: parseBotConfig(account.botConfig),
+    botState: parseBotState(account.botState),
+    botStartedAt: account.startedAt?.getTime(),
+    botStoppedAt: account.stoppedAt?.getTime(),
+    stopReason: account.stopReason ?? undefined
+  };
+}
+
+function parseBotConfig(value: unknown): RandomBotConfig | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const config = value as Partial<RandomBotConfig>;
+  if (!config.symbol || !config.direction || !config.amount || !config.amountUnit || !config.leverage) return undefined;
+  return {
+    symbol: String(config.symbol),
+    direction: config.direction === "long" || config.direction === "short" || config.direction === "both" ? config.direction : "both",
+    amount: Number(config.amount),
+    amountUnit: config.amountUnit === "base" ? "base" : "quote",
+    leverage: Number(config.leverage),
+    takeProfitPercent: Number(config.takeProfitPercent),
+    stopLossPercent: Number(config.stopLossPercent),
+    maxDrawdownPercent: Number(config.maxDrawdownPercent),
+    entryIntervalSeconds: Number(config.entryIntervalSeconds)
+  };
+}
+
+function parseBotState(value: unknown): RandomBotState | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const state = value as Partial<RandomBotState>;
+  return {
+    phase: state.phase === "holding" || state.phase === "ended" ? state.phase : "waiting",
+    activePositionId: state.activePositionId,
+    lastEntryAt: state.lastEntryAt,
+    lastExitAt: state.lastExitAt,
+    tradeCount: Number(state.tradeCount ?? 0)
   };
 }
 

@@ -1,4 +1,4 @@
-import type { AccountKind, AccountSnapshot, AccountStats, AmountUnit, Order, OrderSide, OrderType, Paginated, Position, Ticker, TradingAccount } from "../types";
+import type { AccountKind, AccountMode, AccountSnapshot, AccountStats, AmountUnit, BotDefinitionMeta, BotType, Order, OrderSide, OrderType, Paginated, Position, RandomBotConfig, Ticker, TradingAccount } from "../types";
 
 const AUTH_STORAGE_KEY = "melon_auth_token";
 let authToken = sessionStorage.getItem(AUTH_STORAGE_KEY) ?? "";
@@ -10,6 +10,10 @@ export class ApiError extends Error {
   ) {
     super(message);
   }
+}
+
+function accountQuery(accountId?: string) {
+  return accountId ? `accountId=${encodeURIComponent(accountId)}` : "";
 }
 
 export function setAuthToken(token: string) {
@@ -39,20 +43,26 @@ export const api = {
   authStatus: () => fetchJson<{ required: boolean }>("/api/auth/status"),
   login: (password: string) => fetchJson<{ token: string; expiresAt: number }>("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
   symbols: () => fetchJson<{ symbols: string[] }>("/api/symbols"),
+  botDefinitions: () => fetchJson<{ items: BotDefinitionMeta[] }>("/api/bots/definitions"),
   accounts: () => fetchJson<TradingAccount[]>("/api/accounts"),
-  createAccount: (payload: { name: string; kind: AccountKind; startingCash?: number }) =>
+  createAccount: (payload: { name: string; kind: AccountKind; mode?: AccountMode; botType?: BotType; botConfig?: RandomBotConfig; startingCash?: number }) =>
     fetchJson<TradingAccount>("/api/accounts", { method: "POST", body: JSON.stringify(payload) }),
+  archiveAccount: (accountId: string) =>
+    fetchJson<{ accounts: TradingAccount[]; account: AccountSnapshot }>(`/api/accounts/${accountId}/archive`, { method: "PATCH", body: JSON.stringify({ confirm: true }) }),
+  deleteAccount: (accountId: string) =>
+    fetchJson<{ accounts: TradingAccount[]; account: AccountSnapshot }>(`/api/accounts/${accountId}`, { method: "DELETE", body: JSON.stringify({ confirm: true }) }),
+  stopBot: (accountId?: string) => fetchJson<AccountSnapshot>(`/api/bots/stop${accountId ? `?${accountQuery(accountId)}` : ""}`, { method: "POST" }),
   switchAccount: (accountId: string) =>
     fetchJson<AccountSnapshot>("/api/accounts/active", { method: "PUT", body: JSON.stringify({ accountId }) }),
   tickers: () => fetchJson<Record<string, Ticker>>("/api/tickers"),
-  account: () => fetchJson<AccountSnapshot>("/api/account"),
-  accountStats: () => fetchJson<AccountStats>("/api/account/stats"),
-  orders: (page: number, pageSize: number) => fetchJson<Paginated<Order>>(`/api/orders/history?page=${page}&pageSize=${pageSize}`),
-  positionHistory: (page: number, pageSize: number) => fetchJson<Paginated<Position>>(`/api/positions/history?page=${page}&pageSize=${pageSize}`),
-  updatePositionRisk: (positionId: string, payload: { takeProfitPrice?: number | null; stopLossPrice?: number | null }) =>
-    fetchJson<AccountSnapshot>(`/api/positions/${positionId}/risk`, { method: "PATCH", body: JSON.stringify(payload) }),
-  cancelOrder: (orderId: string) => fetchJson<Order>(`/api/orders/${orderId}`, { method: "DELETE" }),
-  order: (payload: { symbol: string; side: OrderSide; type: OrderType; amount: number; amountUnit: AmountUnit; price?: number; leverage: number }) =>
+  account: (accountId?: string) => accountId ? fetchJson<AccountSnapshot>(`/api/accounts/${accountId}/snapshot`) : fetchJson<AccountSnapshot>("/api/account"),
+  accountStats: (accountId?: string) => fetchJson<AccountStats>(`/api/account/stats${accountId ? `?${accountQuery(accountId)}` : ""}`),
+  orders: (accountId: string, page: number, pageSize: number) => fetchJson<Paginated<Order>>(`/api/orders/history?${accountQuery(accountId)}&page=${page}&pageSize=${pageSize}`),
+  positionHistory: (accountId: string, page: number, pageSize: number) => fetchJson<Paginated<Position>>(`/api/positions/history?${accountQuery(accountId)}&page=${page}&pageSize=${pageSize}`),
+  updatePositionRisk: (accountId: string, positionId: string, payload: { takeProfitPrice?: number | null; stopLossPrice?: number | null }) =>
+    fetchJson<AccountSnapshot>(`/api/positions/${positionId}/risk?${accountQuery(accountId)}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  cancelOrder: (accountId: string, orderId: string) => fetchJson<Order>(`/api/orders/${orderId}?${accountQuery(accountId)}`, { method: "DELETE" }),
+  order: (payload: { accountId: string; clientOrderId: string; symbol: string; side: OrderSide; type: OrderType; amount: number; amountUnit: AmountUnit; price?: number; leverage: number }) =>
     fetchJson<Order>("/api/orders", {
       method: "POST",
       body: JSON.stringify(payload)

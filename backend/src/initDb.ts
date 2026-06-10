@@ -12,10 +12,30 @@ CREATE TABLE IF NOT EXISTS "Account" (
   "realizedPnl" REAL NOT NULL DEFAULT 0,
   "totalFees" REAL NOT NULL DEFAULT 0,
   "isActive" BOOLEAN NOT NULL DEFAULT false,
+  "mode" TEXT NOT NULL DEFAULT 'manual',
+  "botType" TEXT,
+  "botStatus" TEXT,
+  "botConfig" JSONB,
+  "botState" JSONB,
+  "startedAt" DATETIME,
+  "stoppedAt" DATETIME,
+  "stopReason" TEXT,
+  "archivedAt" DATETIME,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `);
+
+await addColumnIfMissing("Account", "mode", "TEXT NOT NULL DEFAULT 'manual'");
+await addColumnIfMissing("Account", "botType", "TEXT");
+await addColumnIfMissing("Account", "botStatus", "TEXT");
+await addColumnIfMissing("Account", "botConfig", "JSONB");
+await addColumnIfMissing("Account", "botState", "JSONB");
+await addColumnIfMissing("Account", "startedAt", "DATETIME");
+await addColumnIfMissing("Account", "stoppedAt", "DATETIME");
+await addColumnIfMissing("Account", "stopReason", "TEXT");
+await addColumnIfMissing("Account", "archivedAt", "DATETIME");
+await prisma.$executeRawUnsafe(`UPDATE "Account" SET "mode" = COALESCE("mode", 'manual');`);
 
 await prisma.$executeRawUnsafe(`
 CREATE TABLE IF NOT EXISTS "Position" (
@@ -88,6 +108,7 @@ await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Position_accountId_s
 await prisma.$executeRawUnsafe(`
 CREATE TABLE IF NOT EXISTS "Order" (
   "id" TEXT NOT NULL PRIMARY KEY,
+  "clientOrderId" TEXT,
   "accountId" TEXT NOT NULL,
   "symbol" TEXT NOT NULL,
   "side" TEXT NOT NULL,
@@ -111,6 +132,7 @@ CREATE TABLE IF NOT EXISTS "Order" (
 );
 `);
 
+await addColumnIfMissing("Order", "clientOrderId", "TEXT");
 await addColumnIfMissing("Order", "filledAmount", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Order", "remainingAmount", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Order", "avgFillPrice", "REAL NOT NULL DEFAULT 0");
@@ -152,6 +174,9 @@ CREATE INDEX IF NOT EXISTS "Order_accountId_createdAt_idx" ON "Order"("accountId
 await prisma.$executeRawUnsafe(`
 CREATE INDEX IF NOT EXISTS "Order_positionId_idx" ON "Order"("positionId");
 `);
+await prisma.$executeRawUnsafe(`
+CREATE UNIQUE INDEX IF NOT EXISTS "Order_accountId_clientOrderId_key" ON "Order"("accountId", "clientOrderId") WHERE "clientOrderId" IS NOT NULL;
+`);
 
 await prisma.$executeRawUnsafe(`
 CREATE TABLE IF NOT EXISTS "AccountEquityEvent" (
@@ -175,19 +200,6 @@ CREATE TABLE IF NOT EXISTS "AccountEquityEvent" (
 `);
 await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "AccountEquityEvent_orderId_key" ON "AccountEquityEvent"("orderId");`);
 await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AccountEquityEvent_accountId_createdAt_idx" ON "AccountEquityEvent"("accountId", "createdAt");`);
-
-await prisma.$executeRawUnsafe(`
-CREATE TABLE IF NOT EXISTS "StrategySetting" (
-  "id" TEXT NOT NULL PRIMARY KEY,
-  "enabled" BOOLEAN NOT NULL DEFAULT false,
-  "symbol" TEXT NOT NULL,
-  "shortWindow" INTEGER NOT NULL,
-  "longWindow" INTEGER NOT NULL,
-  "tradeAmount" REAL NOT NULL,
-  "accountId" TEXT,
-  "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-`);
 
 await prisma.$disconnect();
 

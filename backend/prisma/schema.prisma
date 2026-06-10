@@ -15,6 +15,15 @@ model Account {
   realizedPnl Float     @default(0)
   totalFees   Float     @default(0)
   isActive    Boolean   @default(false)
+  mode        String    @default("manual")
+  botType     String?
+  botStatus   String?
+  botConfig   Json?
+  botState    Json?
+  startedAt   DateTime?
+  stoppedAt   DateTime?
+  stopReason  String?
+  archivedAt  DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   positions   Position[]
@@ -58,6 +67,7 @@ model Position {
 
 model Order {
   id        String   @id
+  clientOrderId String?
   accountId String
   symbol    String
   side      String
@@ -81,6 +91,7 @@ model Order {
 
   @@index([accountId, createdAt])
   @@index([positionId])
+  @@unique([accountId, clientOrderId])
 }
 
 model AccountEquityEvent {
@@ -102,15 +113,4 @@ model AccountEquityEvent {
   account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@index([accountId, createdAt])
-}
-
-model StrategySetting {
-  id          String   @id @default(cuid())
-  enabled     Boolean  @default(false)
-  symbol      String
-  shortWindow Int
-  longWindow  Int
-  tradeAmount Float
-  accountId   String?
-  updatedAt   DateTime @updatedAt
 }

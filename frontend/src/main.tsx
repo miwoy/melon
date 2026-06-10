@@ -1,14 +1,15 @@
-import { StrictMode, useEffect, useMemo, useState, type FormEvent } from "react";
+import { StrictMode, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Archive, BarChart3, CircleDollarSign, History, ListPlus, Send, WalletCards, X } from "lucide-react";
+import { Activity, Archive, BarChart3, CircleDollarSign, History, ListPlus, Send, Trash2, WalletCards, X } from "lucide-react";
 import { ApiError, api, getAuthToken, setAuthToken } from "./lib/api";
-import type { AccountEquityEvent, AccountKind, AccountSnapshot, AccountStats, AmountUnit, Order, OrderType, Paginated, Position, Ticker, TradingAccount } from "./types";
+import type { AccountEquityEvent, AccountKind, AccountMode, AccountSnapshot, AccountStats, AmountUnit, BotDefinitionMeta, BotStatus, BotType, Order, OrderType, Paginated, Position, RandomBotConfig, Ticker, TradingAccount } from "./types";
 import "./styles.css";
 
 const emptyAccount: AccountSnapshot = {
   accountId: "",
   accountName: "加载中",
   accountKind: "paper",
+  accountMode: "manual",
   cash: 0,
   equity: 0,
   usedMargin: 0,
@@ -20,14 +21,32 @@ const emptyAccount: AccountSnapshot = {
 
 const PAGE_SIZE = 10;
 const TAKER_FEE_RATE = 0.0005;
-type ModalView = "history" | "account" | "close" | "risk" | "stats" | null;
+const WS_RECONNECT_MS = 3000;
+const ACCOUNT_SWITCH_GUARD_MS = 1500;
+const BOT_RUNTIME_TICK_MS = 1000;
+const SELECTED_ACCOUNT_STORAGE_KEY = "melon_selected_account_id";
+const defaultRandomBotConfig: RandomBotConfig = {
+  symbol: "BTC/USDT",
+  direction: "both",
+  amount: 100,
+  amountUnit: "quote",
+  leverage: 10,
+  takeProfitPercent: 0.01,
+  stopLossPercent: 0.1,
+  maxDrawdownPercent: 0.2,
+  entryIntervalSeconds: 30
+};
+type ModalView = "history" | "account" | "close" | "risk" | "stats" | "accountAction" | "orderConfirm" | null;
 type CloseMode = "partial" | "all";
+type AccountAction = "archive" | "delete";
+type PendingOrder = { side: "buy" | "sell" };
 type CurrentOrderItem =
   | { kind: "limit"; id: string; order: Order }
   | { kind: "takeProfit" | "stopLoss"; id: string; position: Position; triggerPrice: number };
 
 function App() {
   const [symbols, setSymbols] = useState<string[]>([]);
+  const [botDefinitions, setBotDefinitions] = useState<BotDefinitionMeta[]>([]);
   const [tickers, setTickers] = useState<Record<string, Ticker>>({});
   const [accounts, setAccounts] = useState<TradingAccount[]>([]);
   const [account, setAccount] = useState<AccountSnapshot>(emptyAccount);
@@ -39,6 +58,9 @@ function App() {
   const [leverage, setLeverage] = useState("10");
   const [newAccountName, setNewAccountName] = useState("");
   const [newAccountKind, setNewAccountKind] = useState<AccountKind>("paper");
+  const [newAccountMode, setNewAccountMode] = useState<AccountMode>("manual");
+  const [newBotType, setNewBotType] = useState<BotType>("random");
+  const [newBotConfig, setNewBotConfig] = useState<RandomBotConfig>(defaultRandomBotConfig);
   const [newAccountCash, setNewAccountCash] = useState("100000");
   const [connection, setConnection] = useState("连接中");
   const [modal, setModal] = useState<ModalView>(null);
@@ -51,10 +73,15 @@ function App() {
   const [riskPosition, setRiskPosition] = useState<Position | null>(null);
   const [takeProfitPrice, setTakeProfitPrice] = useState("");
   const [stopLossPrice, setStopLossPrice] = useState("");
+  const [accountAction, setAccountAction] = useState<AccountAction | null>(null);
+  const [pendingOrder, setPendingOrder] = useState<PendingOrder | null>(null);
+  const [orderSubmitting, setOrderSubmitting] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [authorized, setAuthorized] = useState(false);
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const accountSwitchGuard = useRef({ accountId: "", until: 0 });
 
   useEffect(() => {
     api.authStatus().then((status) => {
@@ -68,19 +95,26 @@ function App() {
 
   useEffect(() => {
     if (!authorized) return;
-    Promise.all([api.symbols(), api.accounts(), api.tickers(), api.account()]).then(
-      ([symbolsRes, accountsRes, tickerRes, accountRes]) => {
+    Promise.all([api.symbols(), api.botDefinitions(), api.accounts(), api.tickers()]).then(
+      async ([symbolsRes, botDefsRes, accountsRes, tickerRes]) => {
         setSymbols(symbolsRes.symbols);
-        setAccounts(accountsRes);
+        setBotDefinitions(botDefsRes.items);
+        const randomDef = botDefsRes.items.find((item) => item.type === "random");
+        if (randomDef) setNewBotConfig({ ...randomDef.defaultConfig, symbol: symbolsRes.symbols[0] ?? randomDef.defaultConfig.symbol });
+        const storedAccountId = sessionStorage.getItem(SELECTED_ACCOUNT_STORAGE_KEY);
+        const selectedAccount = accountsRes.find((item) => item.id === storedAccountId) ?? accountsRes.find((item) => item.isActive) ?? accountsRes[0];
+        const accountRes = selectedAccount ? await api.account(selectedAccount.id) : await api.account();
+        setAccounts(accountsRes.map((item) => ({ ...item, isActive: item.id === accountRes.accountId })));
         setSelectedSymbol(symbolsRes.symbols[0] ?? "BTC/USDT");
         setTickers(tickerRes);
         setAccount(accountRes);
+        sessionStorage.setItem(SELECTED_ACCOUNT_STORAGE_KEY, accountRes.accountId);
       }
     ).catch(handleAuthError);
   }, [authorized]);
 
   useEffect(() => {
-    if (!authorized) return;
+    if (!authorized || !account.accountId) return;
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     let ws: WebSocket | undefined;
     let reconnectTimer: number | undefined;
@@ -88,7 +122,10 @@ function App() {
 
     const connect = () => {
       const token = getAuthToken();
-      ws = new WebSocket(`${protocol}://${window.location.host}/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`);
+      const params = new URLSearchParams();
+      if (token) params.set("token", token);
+      params.set("accountId", account.accountId);
+      ws = new WebSocket(`${protocol}://${window.location.host}/ws?${params.toString()}`);
       ws.onopen = () => setConnection("实时连接");
       ws.onclose = (event) => {
         if (event.code === 1008) {
@@ -98,7 +135,7 @@ function App() {
           return;
         }
         setConnection("正在重连");
-        if (!stopped) reconnectTimer = window.setTimeout(connect, 3000);
+        if (!stopped) reconnectTimer = window.setTimeout(connect, WS_RECONNECT_MS);
       };
       ws.onerror = () => {
         setConnection("连接异常");
@@ -111,7 +148,11 @@ function App() {
             | { type: "account"; data: AccountSnapshot }
             | { type: "order"; data: Order };
           if (message.type === "tickers") setTickers(message.data);
-          if (message.type === "account") setAccount(message.data);
+          if (message.type === "account") {
+            const guard = accountSwitchGuard.current;
+            if (guard.accountId && message.data.accountId !== guard.accountId && Date.now() < guard.until) return;
+            setAccount(message.data);
+          }
         } catch {
           setConnection("消息异常");
         }
@@ -124,7 +165,7 @@ function App() {
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       ws?.close();
     };
-  }, [authorized]);
+  }, [authorized, account.accountId]);
 
   const tickerRows = useMemo(() => Object.values(tickers).sort((a, b) => a.symbol.localeCompare(b.symbol)), [tickers]);
   const openPositions = useMemo(() => account.positions.filter((position) => position.status === "open"), [account.positions]);
@@ -139,6 +180,11 @@ function App() {
     return [...limitItems, ...riskItems].slice(0, 8);
   }, [account.orders, openPositions]);
   const selectedTicker = tickers[selectedSymbol];
+  const isBotAccount = account.accountMode === "bot";
+  const canRemoveAccount = accounts.length > 1;
+  const manualAccountHasOpenPositions = !isBotAccount && openPositions.length > 0;
+  const canArchiveOrDeleteAccount = canRemoveAccount && !manualAccountHasOpenPositions;
+  const accountActionDisabledReason = !canRemoveAccount ? "至少需要保留一个账户" : manualAccountHasOpenPositions ? "手动账户需要先平仓" : "";
   const referencePrice = orderType === "limit" ? Number(price) : selectedTicker?.last;
   const numericAmount = Number(amount);
   const numericLeverage = Number(leverage);
@@ -154,37 +200,53 @@ function App() {
     orderType,
     maxInputAmount
   });
-  const canSubmit = !validationError;
+  const canSubmit = !validationError && !orderSubmitting;
   const amountInvalid = !Number.isFinite(numericAmount) || numericAmount <= 0 || (maxInputAmount > 0 && numericAmount > maxInputAmount);
   const leverageInvalid = !Number.isFinite(numericLeverage) || numericLeverage <= 0;
   const priceInvalid = orderType === "limit" && !validReferencePrice;
 
-  async function submit(side: "buy" | "sell") {
+  function openOrderConfirm(side: "buy" | "sell") {
     if (!canSubmit) return;
+    setPendingOrder({ side });
+    setModal("orderConfirm");
+  }
+
+  async function submitConfirmedOrder() {
+    if (!pendingOrder || !canSubmit || orderSubmitting) return;
+    setOrderSubmitting(true);
     try {
       const order = await api.order({
+        accountId: account.accountId,
+        clientOrderId: createClientOrderId(account.accountId),
         symbol: selectedSymbol,
-        side,
+        side: pendingOrder.side,
         type: orderType,
         amount: Number(amount),
         amountUnit,
         price: orderType === "limit" ? Number(price) : undefined,
         leverage: Number(leverage)
       });
-      if (order.type === "limit" && ["open", "partial"].includes(order.status)) {
-        setAccount((current) => ({ ...current, orders: [order, ...current.orders] }));
-      }
+      setAccount(await api.account(account.accountId));
+      setPendingOrder(null);
+      setModal(null);
+      if (order.status === "rejected") setErrorMessage(order.reason ?? "下单被拒绝");
     } catch (error) {
       handleAuthError(error);
+    } finally {
+      setOrderSubmitting(false);
     }
   }
 
   async function switchAccount(accountId: string) {
     try {
-      const snapshot = await api.switchAccount(accountId);
+      accountSwitchGuard.current = { accountId, until: Date.now() + ACCOUNT_SWITCH_GUARD_MS };
+      const snapshot = await api.account(accountId);
       setAccount(snapshot);
       setAccounts((current) => current.map((item) => ({ ...item, isActive: item.id === accountId })));
+      sessionStorage.setItem(SELECTED_ACCOUNT_STORAGE_KEY, accountId);
+      accountSwitchGuard.current = { accountId, until: Date.now() + ACCOUNT_SWITCH_GUARD_MS };
     } catch (error) {
+      accountSwitchGuard.current = { accountId: "", until: 0 };
       handleAuthError(error);
     }
   }
@@ -192,8 +254,11 @@ function App() {
   async function createAccount() {
     try {
       const created = await api.createAccount({
-        name: newAccountName.trim() || (newAccountKind === "paper" ? "新的模拟账户" : "新的真实账户"),
+        name: newAccountName.trim() || (newAccountMode === "bot" ? "新的机器人账户" : newAccountKind === "paper" ? "新的模拟账户" : "新的真实账户"),
         kind: newAccountKind,
+        mode: newAccountMode,
+        botType: newAccountMode === "bot" ? newBotType : undefined,
+        botConfig: newAccountMode === "bot" ? newBotConfig : undefined,
         startingCash: newAccountKind === "paper" ? Number(newAccountCash) : undefined
       });
       setAccounts((current) => [...current, created]);
@@ -241,6 +306,8 @@ function App() {
     const finalAmount = parsedAmount >= closePosition.amount ? closePosition.amount : roundAmount(parsedAmount);
     try {
       await api.order({
+        accountId: account.accountId,
+        clientOrderId: createClientOrderId(account.accountId),
         symbol: closePosition.symbol,
         side: closePosition.side === "long" ? "sell" : "buy",
         type: "market",
@@ -248,7 +315,7 @@ function App() {
         amountUnit: "base",
         leverage: closePosition.leverage
       });
-      setAccount(await api.account());
+      setAccount(await api.account(account.accountId));
       setModal(null);
       setClosePosition(null);
     } catch (error) {
@@ -259,7 +326,7 @@ function App() {
   async function savePositionRisk() {
     if (!riskPosition) return;
     try {
-      const snapshot = await api.updatePositionRisk(riskPosition.id, {
+      const snapshot = await api.updatePositionRisk(account.accountId, riskPosition.id, {
         takeProfitPrice: parseOptionalPositive(takeProfitPrice),
         stopLossPrice: parseOptionalPositive(stopLossPrice)
       });
@@ -274,14 +341,45 @@ function App() {
   async function cancelCurrentOrder(item: CurrentOrderItem) {
     try {
       if (item.kind === "limit") {
-        await api.cancelOrder(item.order.id);
+        await api.cancelOrder(account.accountId, item.order.id);
       } else {
-        await api.updatePositionRisk(item.position.id, {
+        await api.updatePositionRisk(account.accountId, item.position.id, {
           takeProfitPrice: item.kind === "takeProfit" ? null : item.position.takeProfitPrice ?? null,
           stopLossPrice: item.kind === "stopLoss" ? null : item.position.stopLossPrice ?? null
         });
       }
-      setAccount(await api.account());
+      setAccount(await api.account(account.accountId));
+    } catch (error) {
+      handleAuthError(error);
+    }
+  }
+
+  async function stopBot() {
+    try {
+      const snapshot = await api.stopBot(account.accountId);
+      setAccount(snapshot);
+      setAccounts((current) => current.map((item) => item.id === snapshot.accountId ? { ...item, botStatus: snapshot.botStatus, botStartedAt: snapshot.botStartedAt, botStoppedAt: snapshot.botStoppedAt } : item));
+    } catch (error) {
+      handleAuthError(error);
+    }
+  }
+
+  function openAccountAction(action: AccountAction) {
+    if (!canArchiveOrDeleteAccount) return;
+    setAccountAction(action);
+    setModal("accountAction");
+  }
+
+  async function executeAccountAction() {
+    if (!accountAction) return;
+    try {
+      const result = accountAction === "archive"
+        ? await api.archiveAccount(account.accountId)
+        : await api.deleteAccount(account.accountId);
+      setAccounts(result.accounts);
+      setAccount(result.account);
+      setAccountAction(null);
+      setModal(null);
     } catch (error) {
       handleAuthError(error);
     }
@@ -307,7 +405,7 @@ function App() {
       setLoginError("登录已过期，请重新登录");
       return;
     }
-    console.error(error);
+    setErrorMessage(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "操作失败");
   }
 
   if (!authReady) return <main><div className="login-card"><h1>蜜瓜交易系统</h1><p>正在检查授权状态</p></div></main>;
@@ -321,21 +419,24 @@ function App() {
           <p>币安 U 本位永续合约 · 模拟盘优先</p>
         </div>
         <div className="top-controls">
-          <label className="account-switcher">当前账户<select value={account.accountId} onChange={(event) => switchAccount(event.target.value)}>{accounts.map((item) => <option key={item.id} value={item.id}>{item.name} · {accountKindLabel(item.kind)}</option>)}</select></label>
+          <label className="account-switcher">当前账户<select value={account.accountId} onChange={(event) => switchAccount(event.target.value)}>{accounts.map((item) => <option key={item.id} value={item.id}>{item.name} · {accountKindLabel(item.kind)} · {accountModeLabel(item.mode, item.botStatus)}</option>)}</select></label>
           <button className="icon-button" onClick={() => setModal("account")} title="新增账户"><ListPlus size={18} /></button>
           <div className={`status ${connection === "实时连接" ? "live" : ""}`}><Activity size={16} />{connection}</div>
         </div>
       </header>
 
       <section className="metrics">
-        <Metric className="account-metric" icon={<WalletCards />} label={`${account.accountName} · ${accountKindLabel(account.accountKind)}`} value={money(account.equity)} />
+        <Metric className="account-metric" icon={<WalletCards />} label={`${account.accountName} · ${accountKindLabel(account.accountKind)} · ${accountModeLabel(account.accountMode, account.botStatus)}`} value={money(account.equity)} />
         <Metric icon={<CircleDollarSign />} label="可用余额" value={money(account.cash)} />
         <Metric icon={<Activity />} label="占用保证金" value={money(account.usedMargin)} />
         <Metric icon={<Activity />} label="已实现 PnL" value={money(account.realizedPnl)} tone={account.realizedPnl >= 0 ? "up" : "down"} />
         <Metric icon={<Archive />} label="累计手续费" value={money(account.totalFees)} />
       </section>
       <section className="account-actions">
+        {errorMessage && <div className="inline-error"><span>{errorMessage}</span><button className="icon-button compact" onClick={() => setErrorMessage("")} title="关闭"><X size={15} /></button></div>}
         <button className="ghost" onClick={() => setModal("stats")}><BarChart3 size={16} />账户统计</button>
+        <button className="ghost" title={accountActionDisabledReason} disabled={!canArchiveOrDeleteAccount} onClick={() => openAccountAction("archive")}><Archive size={16} />归档账户</button>
+        <button className="ghost danger" title={accountActionDisabledReason} disabled={!canArchiveOrDeleteAccount} onClick={() => openAccountAction("delete")}><Trash2 size={16} />删除账户</button>
       </section>
 
       <section className="dashboard">
@@ -350,6 +451,7 @@ function App() {
         </div>
 
         <div className="panel trade">
+          {isBotAccount ? <BotAccountPanel account={account} onStop={stopBot} /> : <>
           <PanelHeader title="手动交易" />
           <label className="symbol-row">交易对<select value={selectedSymbol} onChange={(e) => setSelectedSymbol(e.target.value)}>{symbols.map((symbol) => <option key={symbol}>{symbol}</option>)}</select></label>
           <div className="trade-quote">
@@ -372,9 +474,10 @@ function App() {
           </div>
           {validationError && <div className="trade-error">{validationError}</div>}
           <div className="actions">
-            <button className="buy" disabled={!canSubmit} onClick={() => submit("buy")}><Send size={16} />买入/做多</button>
-            <button className="sell" disabled={!canSubmit} onClick={() => submit("sell")}><Send size={16} />卖出/做空</button>
+            <button className="buy" disabled={!canSubmit} onClick={() => openOrderConfirm("buy")}><Send size={16} />买入/做多</button>
+            <button className="sell" disabled={!canSubmit} onClick={() => openOrderConfirm("sell")}><Send size={16} />卖出/做空</button>
           </div>
+          </>}
         </div>
 
         <div className="panel portfolio">
@@ -386,14 +489,16 @@ function App() {
             <button className="icon-button compact" onClick={() => { setHistoryTab(portfolioTab); setModal("history"); }} title="历史明细"><History size={17} /></button>
           </div>
           {portfolioTab === "positions"
-            ? openPositions.length === 0 ? <EmptyState text="暂无持仓中仓位" /> : <PositionCards positions={openPositions} onRisk={openRiskModal} onClose={(position) => openCloseModal(position, "partial")} onCloseAll={(position) => openCloseModal(position, "all")} />
-            : currentOrders.length === 0 ? <EmptyState text="暂无当前委托" /> : <OpenOrderList items={currentOrders} onCancel={cancelCurrentOrder} />}
+            ? openPositions.length === 0 ? <EmptyState text="暂无持仓中仓位" /> : <PositionCards positions={openPositions} readOnly={isBotAccount} onRisk={openRiskModal} onClose={(position) => openCloseModal(position, "partial")} onCloseAll={(position) => openCloseModal(position, "all")} />
+            : currentOrders.length === 0 ? <EmptyState text="暂无当前委托" /> : <OpenOrderList items={currentOrders} readOnly={isBotAccount} onCancel={cancelCurrentOrder} />}
         </div>
       </section>
 
       {modal === "history" && <Modal title="历史明细" onClose={() => setModal(null)}><HistoryDetails accountId={account.accountId} tab={historyTab} setTab={setHistoryTab} /></Modal>}
       {modal === "stats" && <Modal title="账户统计" onClose={() => setModal(null)}><AccountStatsView accountId={account.accountId} /></Modal>}
-      {modal === "account" && <Modal title="新增账户" onClose={() => setModal(null)}><AccountForm name={newAccountName} kind={newAccountKind} cash={newAccountCash} setName={setNewAccountName} setKind={setNewAccountKind} setCash={setNewAccountCash} onSubmit={createAccount} /></Modal>}
+      {modal === "account" && <Modal title="新增账户" onClose={() => setModal(null)}><AccountForm name={newAccountName} kind={newAccountKind} mode={newAccountMode} botType={newBotType} botConfig={newBotConfig} botDefinitions={botDefinitions} symbols={symbols} cash={newAccountCash} setName={setNewAccountName} setKind={setNewAccountKind} setMode={setNewAccountMode} setBotType={setNewBotType} setBotConfig={setNewBotConfig} setCash={setNewAccountCash} onSubmit={createAccount} /></Modal>}
+      {modal === "accountAction" && accountAction && <Modal title={accountAction === "archive" ? "确认归档账户" : "确认删除账户"} onClose={() => { setAccountAction(null); setModal(null); }}><ConfirmAccountAction action={accountAction} account={account} onSubmit={executeAccountAction} onCancel={() => { setAccountAction(null); setModal(null); }} /></Modal>}
+      {modal === "orderConfirm" && pendingOrder && <Modal title="确认下单" onClose={() => { if (!orderSubmitting) { setPendingOrder(null); setModal(null); } }}><ConfirmOrderForm side={pendingOrder.side} symbol={selectedSymbol} orderType={orderType} amount={numericAmount} amountUnit={amountUnit} price={orderType === "limit" ? Number(price) : undefined} leverage={numericLeverage} estimatedBaseAmount={estimatedBaseAmount} maxInputAmount={maxInputAmount} submitting={orderSubmitting} onSubmit={submitConfirmedOrder} onCancel={() => { if (!orderSubmitting) { setPendingOrder(null); setModal(null); } }} /></Modal>}
       {modal === "close" && closePosition && <Modal title={closeMode === "all" ? "确认一键平仓" : "平仓"} onClose={() => setModal(null)}><ClosePositionForm position={closePosition} amount={closeAmount} percent={closePercent} mode={closeMode} setAmount={updateCloseAmount} setPercent={updateClosePercent} onSubmit={executeClosePosition} /></Modal>}
       {modal === "risk" && riskPosition && <Modal title="止盈止损" onClose={() => setModal(null)}><PositionRiskForm position={riskPosition} takeProfitPrice={takeProfitPrice} stopLossPrice={stopLossPrice} setTakeProfitPrice={setTakeProfitPrice} setStopLossPrice={setStopLossPrice} onSubmit={savePositionRisk} /></Modal>}
     </main>
@@ -408,7 +513,42 @@ function PanelHeader({ title, actionLabel, onAction }: { title: string; actionLa
   return <div className="panel-header"><h2>{title}</h2>{actionLabel && <button className="text-button" onClick={onAction}>{actionLabel}</button>}</div>;
 }
 
-function PositionCards({ positions, onRisk, onClose, onCloseAll }: { positions: Position[]; onRisk: (position: Position) => void; onClose: (position: Position) => void; onCloseAll: (position: Position) => void }) {
+function BotAccountPanel({ account, onStop }: { account: AccountSnapshot; onStop: () => void }) {
+  const config = account.botConfig;
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (account.botStatus !== "running") return;
+    const timer = window.setInterval(() => setNow(Date.now()), BOT_RUNTIME_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [account.botStatus, account.botStartedAt]);
+  const runtimeEnd = account.botStatus === "running" ? now : account.botStoppedAt ?? now;
+  const runtimeMs = account.botStartedAt ? Math.max(runtimeEnd - account.botStartedAt, 0) : 0;
+  return <>
+    <PanelHeader title="机器人账户" />
+    <div className="bot-status-card">
+      <div><span>机器人类型</span><strong>{botTypeLabel(account.botType)}</strong></div>
+      <div><span>运行状态</span><strong className={account.botStatus === "running" ? "up" : "down"}>{botStatusLabel(account.botStatus)}</strong></div>
+      <div><span>启动时间</span><strong>{account.botStartedAt ? dateTime(account.botStartedAt) : "-"}</strong></div>
+      <div><span>运行时长</span><strong>{account.botStartedAt ? duration(runtimeMs) : "-"}</strong></div>
+      <div><span>阶段</span><strong>{account.botState?.phase === "holding" ? "持仓中" : account.botState?.phase === "ended" ? "已结束" : "等待开仓"}</strong></div>
+      <div><span>交易次数</span><strong>{account.botState?.tradeCount ?? 0}</strong></div>
+    </div>
+    {config && <dl className="bot-config-list">
+      <div><dt>交易对</dt><dd>{config.symbol}</dd></div>
+      <div><dt>方向</dt><dd>{botDirectionLabel(config.direction)}</dd></div>
+      <div><dt>数量</dt><dd>{config.amountUnit === "quote" ? money(config.amount) : num(config.amount)}</dd></div>
+      <div><dt>杠杆</dt><dd>{config.leverage}x</dd></div>
+      <div><dt>每仓止盈</dt><dd>{rate(config.takeProfitPercent)}</dd></div>
+      <div><dt>每仓止损</dt><dd>{rate(config.stopLossPercent)}</dd></div>
+      <div><dt>最大回撤</dt><dd>{rate(config.maxDrawdownPercent)}</dd></div>
+      <div><dt>开仓间隔</dt><dd>{config.entryIntervalSeconds}s</dd></div>
+    </dl>}
+    {account.stopReason && <div className="confirm-box">停止原因：{account.stopReason}</div>}
+    <button className="sell" disabled={account.botStatus !== "running"} onClick={onStop}>终止机器人</button>
+  </>;
+}
+
+function PositionCards({ positions, readOnly = false, onRisk, onClose, onCloseAll }: { positions: Position[]; readOnly?: boolean; onRisk: (position: Position) => void; onClose: (position: Position) => void; onCloseAll: (position: Position) => void }) {
   return <div className="position-cards">{positions.map((p) => {
     const avgChange = positionAvgChange(p);
     const floatingRoi = p.margin > 0 ? p.unrealizedPnl / p.margin : 0;
@@ -430,16 +570,16 @@ function PositionCards({ positions, onRisk, onClose, onCloseAll }: { positions: 
         <div><dt>止损价</dt><dd>{p.stopLossPrice ? money(p.stopLossPrice) : "-"}</dd></div>
         <div><dt>均价涨跌</dt><dd className={avgChange >= 0 ? "up" : "down"}>{rate(avgChange)}</dd></div>
       </dl>
-      <div className="position-actions">
+      {!readOnly && <div className="position-actions">
         <button className="neutral ghost" onClick={() => onRisk(p)}>止盈止损</button>
         <button className="neutral ghost" onClick={() => onClose(p)}>平仓</button>
         <button className="sell" onClick={() => onCloseAll(p)}>一键平仓</button>
-      </div>
+      </div>}
     </article>;
   })}</div>;
 }
 
-function OpenOrderList({ items, onCancel }: { items: CurrentOrderItem[]; onCancel: (item: CurrentOrderItem) => void }) {
+function OpenOrderList({ items, readOnly = false, onCancel }: { items: CurrentOrderItem[]; readOnly?: boolean; onCancel: (item: CurrentOrderItem) => void }) {
   return <div className="order-list">{items.map((item) => {
     if (item.kind === "limit") {
       const order = item.order;
@@ -448,7 +588,7 @@ function OpenOrderList({ items, onCancel }: { items: CurrentOrderItem[]; onCance
         <div><span className={order.side === "buy" ? "up" : "down"}>{sideLabel(order.side)}</span><span>{order.leverage}x · {statusLabel(order.status)}</span></div>
         <div><span>委托价 {money(order.price)}</span><span>已成交 {num(order.filledAmount)}</span></div>
         <div><span>委托 {num(order.amount)}</span><span>剩余 {num(order.remainingAmount)}</span></div>
-        <button className="neutral ghost" onClick={() => onCancel(item)}>取消委托</button>
+        {!readOnly && <button className="neutral ghost" onClick={() => onCancel(item)}>取消委托</button>}
       </div>;
     }
     const position = item.position;
@@ -456,7 +596,7 @@ function OpenOrderList({ items, onCancel }: { items: CurrentOrderItem[]; onCance
       <div><strong>{position.symbol}</strong><span className="tag">止盈止损</span></div>
       <div><span className={item.kind === "takeProfit" ? "up" : "down"}>{item.kind === "takeProfit" ? "止盈" : "止损"}</span><span>{positionSideLabel(position.side)} · {position.leverage}x</span></div>
       <div><span>触发价 {money(item.triggerPrice)}</span><span>可平 {num(position.amount)}</span></div>
-      <button className="neutral ghost" onClick={() => onCancel(item)}>取消设置</button>
+      {!readOnly && <button className="neutral ghost" onClick={() => onCancel(item)}>取消设置</button>}
     </div>;
   })}</div>;
 }
@@ -487,6 +627,68 @@ function PositionRiskForm({
     <label>止损价<input className={stopLossInvalid ? "invalid" : ""} value={stopLossPrice} onChange={(event) => setStopLossPrice(event.target.value)} inputMode="decimal" placeholder="留空表示不设置" /></label>
     {(takeProfitInvalid || stopLossInvalid) && <div className="trade-error">价格必须大于 0，或留空取消设置</div>}
     <button className="neutral" disabled={takeProfitInvalid || stopLossInvalid} onClick={onSubmit}>保存止盈止损</button>
+  </div>;
+}
+
+function ConfirmAccountAction({ action, account, onSubmit, onCancel }: { action: AccountAction; account: AccountSnapshot; onSubmit: () => void; onCancel: () => void }) {
+  const isDelete = action === "delete";
+  const botMessage = account.accountMode === "bot" ? "如果账户还有持仓，系统会先终止机器人、撤销当前委托，并按市价平仓。" : "";
+  return <div className="modal-form">
+    <div className="confirm-box">
+      {isDelete
+        ? `删除账户「${account.accountName}」后，该账户的仓位、订单和账户统计会一起删除，无法在系统内恢复。${botMessage}`
+        : `归档账户「${account.accountName}」后，它会从账户列表中隐藏，账户数据会保留在数据库中。${botMessage}`}
+    </div>
+    <div className="confirm-actions">
+      <button className="neutral ghost" onClick={onCancel}>取消</button>
+      <button className={isDelete ? "sell" : "neutral"} onClick={onSubmit}>{isDelete ? "确认删除" : "确认归档"}</button>
+    </div>
+  </div>;
+}
+
+function ConfirmOrderForm({
+  side,
+  symbol,
+  orderType,
+  amount,
+  amountUnit,
+  price,
+  leverage,
+  estimatedBaseAmount,
+  maxInputAmount,
+  submitting,
+  onSubmit,
+  onCancel
+}: {
+  side: "buy" | "sell";
+  symbol: string;
+  orderType: OrderType;
+  amount: number;
+  amountUnit: AmountUnit;
+  price?: number;
+  leverage: number;
+  estimatedBaseAmount: number;
+  maxInputAmount: number;
+  submitting: boolean;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  return <div className="modal-form">
+    <div className="confirm-box">请确认订单参数。提交过程中按钮会锁定，避免重复下单。</div>
+    <dl className="confirm-list">
+      <div><dt>交易对</dt><dd>{symbol}</dd></div>
+      <div><dt>方向</dt><dd className={side === "buy" ? "up" : "down"}>{sideLabel(side)}</dd></div>
+      <div><dt>订单类型</dt><dd>{orderTypeLabel(orderType)}</dd></div>
+      <div><dt>杠杆</dt><dd>{leverage}x</dd></div>
+      <div><dt>下单数量</dt><dd>{amountUnit === "quote" ? money(amount) : `${num(amount)} ${baseSymbol(symbol)}`}</dd></div>
+      <div><dt>预计币数量</dt><dd>{num(Number.isFinite(estimatedBaseAmount) ? estimatedBaseAmount : 0)} {baseSymbol(symbol)}</dd></div>
+      <div><dt>{orderType === "limit" ? "限价价格" : "成交价格"}</dt><dd>{orderType === "limit" && price ? money(price) : "按市场价"}</dd></div>
+      <div><dt>预计最大可下单</dt><dd>{amountUnit === "quote" ? money(maxInputAmount) : `${num(maxInputAmount)} ${baseSymbol(symbol)}`}</dd></div>
+    </dl>
+    <div className="confirm-actions">
+      <button className="neutral ghost" disabled={submitting} onClick={onCancel}>取消</button>
+      <button className={side === "buy" ? "buy" : "sell"} disabled={submitting} onClick={onSubmit}>{submitting ? "提交中" : "确认下单"}</button>
+    </div>
   </div>;
 }
 
@@ -545,7 +747,7 @@ function AccountStatsView({ accountId }: { accountId: string }) {
   const [stats, setStats] = useState<AccountStats | null>(null);
   useEffect(() => {
     setStats(null);
-    api.accountStats().then(setStats);
+    api.accountStats(accountId).then(setStats);
   }, [accountId]);
   if (!stats) return <EmptyState text="正在加载账户统计" />;
   if (stats.totalTrades === 0) return <EmptyState text="暂无平仓事件，完成平仓后会生成统计" />;
@@ -605,7 +807,7 @@ function PositionHistory({ accountId }: { accountId: string }) {
   const [data, setData] = useState<Paginated<Position> | null>(null);
   useEffect(() => {
     setData(null);
-    api.positionHistory(page, PAGE_SIZE).then(setData);
+    api.positionHistory(accountId, page, PAGE_SIZE).then(setData);
   }, [accountId, page]);
   if (!data) return <EmptyState text="正在加载仓位历史" />;
   if (data.total === 0) return <EmptyState text="暂无已平仓或部分平仓记录" />;
@@ -617,7 +819,7 @@ function OrderHistory({ accountId }: { accountId: string }) {
   const [data, setData] = useState<Paginated<Order> | null>(null);
   useEffect(() => {
     setData(null);
-    api.orders(page, PAGE_SIZE).then(setData);
+    api.orders(accountId, page, PAGE_SIZE).then(setData);
   }, [accountId, page]);
   if (!data) return <EmptyState text="正在加载订单" />;
   if (data.total === 0) return <EmptyState text="暂无订单" />;
@@ -628,16 +830,99 @@ function Pagination({ page, totalPages, total, onPage }: { page: number; totalPa
   return <div className="pagination"><span>共 {total} 条 · 第 {page + 1}/{totalPages} 页</span><div><button className="neutral ghost" disabled={page === 0} onClick={() => onPage(page - 1)}>上一页</button><button className="neutral ghost" disabled={page >= totalPages - 1} onClick={() => onPage(page + 1)}>下一页</button></div></div>;
 }
 
-function AccountForm({ name, kind, cash, setName, setKind, setCash, onSubmit }: { name: string; kind: AccountKind; cash: string; setName: (value: string) => void; setKind: (value: AccountKind) => void; setCash: (value: string) => void; onSubmit: () => void }) {
-  return <div className="modal-form"><label>账户名称<input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：突破策略模拟账户" /></label><label>账户类型<select value={kind} onChange={(e) => setKind(e.target.value as AccountKind)}><option value="paper">模拟账户</option><option value="live">真实账户</option></select></label>{kind === "paper" && <label>初始资金<input value={cash} onChange={(e) => setCash(e.target.value)} inputMode="decimal" /></label>}<button className="neutral" onClick={onSubmit}>创建账户</button></div>;
+function AccountForm({
+  name,
+  kind,
+  mode,
+  botType,
+  botConfig,
+  botDefinitions,
+  symbols,
+  cash,
+  setName,
+  setKind,
+  setMode,
+  setBotType,
+  setBotConfig,
+  setCash,
+  onSubmit
+}: {
+  name: string;
+  kind: AccountKind;
+  mode: AccountMode;
+  botType: BotType;
+  botConfig: RandomBotConfig;
+  botDefinitions: BotDefinitionMeta[];
+  symbols: string[];
+  cash: string;
+  setName: (value: string) => void;
+  setKind: (value: AccountKind) => void;
+  setMode: (value: AccountMode) => void;
+  setBotType: (value: BotType) => void;
+  setBotConfig: (value: RandomBotConfig) => void;
+  setCash: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  const randomDefinition = botDefinitions.find((definition) => definition.type === botType);
+  const [drafts, setDrafts] = useState(() => botConfigDrafts(botConfig));
+  function updateBotConfig<K extends keyof RandomBotConfig>(key: K, value: RandomBotConfig[K]) {
+    setBotConfig({ ...botConfig, [key]: value });
+  }
+  function updateNumberDraft(key: keyof BotConfigDrafts, value: string, apply: (numberValue: number) => RandomBotConfig) {
+    setDrafts((current) => ({ ...current, [key]: value }));
+    const numberValue = Number(value);
+    if (value !== "" && Number.isFinite(numberValue)) setBotConfig(apply(numberValue));
+  }
+  return <div className="modal-form">
+    <label>账户名称<input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：随机交易机器人" /></label>
+    <label>账户类型<select value={kind} onChange={(e) => setKind(e.target.value as AccountKind)}><option value="paper">模拟账户</option><option value="live" disabled={mode === "bot"}>真实账户</option></select></label>
+    <label>交易模式<select value={mode} onChange={(e) => { const nextMode = e.target.value as AccountMode; setMode(nextMode); if (nextMode === "bot") setKind("paper"); }}><option value="manual">手动账户</option><option value="bot">机器人账户</option></select></label>
+    {kind === "paper" && <label>初始资金<input value={cash} onChange={(e) => setCash(e.target.value)} inputMode="decimal" /></label>}
+    {mode === "bot" && <div className="bot-form">
+      <label>机器人类型<select value={botType} onChange={(e) => { const nextType = e.target.value as BotType; setBotType(nextType); const definition = botDefinitions.find((item) => item.type === nextType); if (definition) { const nextConfig = { ...definition.defaultConfig, symbol: symbols[0] ?? definition.defaultConfig.symbol }; setBotConfig(nextConfig); setDrafts(botConfigDrafts(nextConfig)); } }}><option value="random">随机交易机器人</option></select></label>
+      <div className="confirm-box">{randomDefinition?.description ?? "机器人账户创建后将自动运行，不提供手动交易入口。"}</div>
+      <div className="form-grid">
+        <label>交易对<select value={botConfig.symbol} onChange={(e) => updateBotConfig("symbol", e.target.value)}>{symbols.map((symbol) => <option key={symbol}>{symbol}</option>)}</select></label>
+        <label>方向<select value={botConfig.direction} onChange={(e) => updateBotConfig("direction", e.target.value as RandomBotConfig["direction"])}><option value="both">随机多空</option><option value="long">只做多</option><option value="short">只做空</option></select></label>
+        <label>数量<input value={drafts.amount} onChange={(e) => updateNumberDraft("amount", e.target.value, (amount) => ({ ...botConfig, amount }))} inputMode="decimal" /></label>
+        <label>数量单位<select value={botConfig.amountUnit} onChange={(e) => updateBotConfig("amountUnit", e.target.value as AmountUnit)}><option value="quote">USDT 金额</option><option value="base">币数量</option></select></label>
+        <label>杠杆<input value={drafts.leverage} onChange={(e) => updateNumberDraft("leverage", e.target.value, (leverage) => ({ ...botConfig, leverage }))} inputMode="numeric" /></label>
+        <label>再次开仓间隔<input value={drafts.entryIntervalSeconds} onChange={(e) => updateNumberDraft("entryIntervalSeconds", e.target.value, (entryIntervalSeconds) => ({ ...botConfig, entryIntervalSeconds }))} inputMode="numeric" /></label>
+        <label>每仓止盈(%)<input value={drafts.takeProfitPercent} onChange={(e) => updateNumberDraft("takeProfitPercent", e.target.value, (takeProfitPercent) => ({ ...botConfig, takeProfitPercent: takeProfitPercent / 100 }))} inputMode="decimal" /></label>
+        <label>每仓止损(%)<input value={drafts.stopLossPercent} onChange={(e) => updateNumberDraft("stopLossPercent", e.target.value, (stopLossPercent) => ({ ...botConfig, stopLossPercent: stopLossPercent / 100 }))} inputMode="decimal" /></label>
+        <label className="span-2">最大回撤<input value={drafts.maxDrawdownPercent} onChange={(e) => updateNumberDraft("maxDrawdownPercent", e.target.value, (maxDrawdownPercent) => ({ ...botConfig, maxDrawdownPercent: maxDrawdownPercent / 100 }))} inputMode="decimal" /></label>
+      </div>
+    </div>}
+    <button className="neutral form-submit" onClick={onSubmit}>创建账户</button>
+  </div>;
 }
 
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-  return <div className="modal-backdrop" role="dialog" aria-modal="true"><section className="modal"><div className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={onClose} title="关闭"><X size={18} /></button></div>{children}</section></div>;
+  return <div className="modal-backdrop" role="dialog" aria-modal="true"><section className="modal"><div className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={onClose} title="关闭"><X size={18} /></button></div><div className="modal-body">{children}</div></section></div>;
 }
 
 function EmptyState({ text }: { text: string }) {
   return <div className="empty-state">{text}</div>;
+}
+
+type BotConfigDrafts = {
+  amount: string;
+  leverage: string;
+  entryIntervalSeconds: string;
+  takeProfitPercent: string;
+  stopLossPercent: string;
+  maxDrawdownPercent: string;
+};
+
+function botConfigDrafts(config: RandomBotConfig): BotConfigDrafts {
+  return {
+    amount: String(config.amount),
+    leverage: String(config.leverage),
+    entryIntervalSeconds: String(config.entryIntervalSeconds),
+    takeProfitPercent: String(config.takeProfitPercent * 100),
+    stopLossPercent: String(config.stopLossPercent * 100),
+    maxDrawdownPercent: String(config.maxDrawdownPercent * 100)
+  };
 }
 
 function money(value: number) {
@@ -655,6 +940,22 @@ function pct(value?: number) {
 
 function rate(value: number) {
   return `${(value * 100).toFixed(2)}%`;
+}
+
+function dateTime(value: number) {
+  return new Date(value).toLocaleString();
+}
+
+function duration(ms: number) {
+  const totalSeconds = Math.max(Math.floor(ms / 1000), 0);
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  if (days > 0) return `${days}天 ${hours}小时 ${minutes}分`;
+  if (hours > 0) return `${hours}小时 ${minutes}分 ${seconds}秒`;
+  if (minutes > 0) return `${minutes}分 ${seconds}秒`;
+  return `${seconds}秒`;
 }
 
 function sideLabel(side: "buy" | "sell") {
@@ -691,6 +992,29 @@ function statusLabel(status: "open" | "partial" | "filled" | "rejected" | "cance
 
 function accountKindLabel(kind: "paper" | "live") {
   return kind === "paper" ? "模拟账户" : "真实账户";
+}
+
+function accountModeLabel(mode: AccountMode, status?: BotStatus) {
+  if (mode === "manual") return "手动";
+  return `机器人${status ? ` · ${botStatusLabel(status)}` : ""}`;
+}
+
+function botTypeLabel(type?: BotType) {
+  if (type === "random") return "随机交易机器人";
+  return "机器人";
+}
+
+function botStatusLabel(status?: BotStatus) {
+  if (status === "running") return "运行中";
+  if (status === "ended") return "已结束";
+  if (status === "stopped") return "已终止";
+  return "未启动";
+}
+
+function botDirectionLabel(direction: RandomBotConfig["direction"]) {
+  if (direction === "long") return "只做多";
+  if (direction === "short") return "只做空";
+  return "随机多空";
 }
 
 function validateOrderInput({
@@ -734,6 +1058,11 @@ function formatAmountInput(value: number) {
 function clampPercent(value: number) {
   if (!Number.isFinite(value)) return 0;
   return Math.min(Math.max(value, 0), 100);
+}
+
+function createClientOrderId(accountId: string) {
+  const random = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `manual-${accountId}-${random}`;
 }
 
 function parseOptionalPositive(value: string) {
