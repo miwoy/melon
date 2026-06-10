@@ -26,16 +26,16 @@ type CrossAccountMetrics = {
 
 type BrokerMutableState = {
   cash: number;
-  realizedPnl: number;
   totalFees: number;
   positions: Array<[string, InternalPosition]>;
   closedPositions: InternalPosition[];
+  orders: Order[];
 };
 
 export class PaperBroker {
   private cash: number;
-  private realizedPnl = 0;
   private totalFees = 0;
+  private startingCash: number;
   private readonly positions = new Map<string, InternalPosition>();
   private readonly closedPositions: InternalPosition[] = [];
   private readonly orders: Order[] = [];
@@ -47,13 +47,14 @@ export class PaperBroker {
     startingCash: number,
     private readonly feeRates: FeeRates
   ) {
+    this.startingCash = startingCash;
     this.cash = startingCash;
   }
 
-  load(state: { cash: number; realizedPnl: number; totalFees: number; positions: InternalPosition[]; orders: Order[] }) {
+  load(state: { startingCash?: number; cash: number; realizedPnl: number; totalFees: number; positions: InternalPosition[]; orders: Order[] }) {
+    this.startingCash = state.startingCash && state.startingCash > 0 ? state.startingCash : inferStartingCash(state);
     this.cash = state.cash;
     this.totalFees = state.totalFees;
-    this.realizedPnl = normalizeStoredRealizedPnl(state);
     this.positions.clear();
     this.closedPositions.splice(0);
     for (const position of state.positions) {
@@ -173,7 +174,7 @@ export class PaperBroker {
       cash: metrics.availableBalance,
       equity: metrics.equity,
       usedMargin: metrics.dynamicUsedMargin,
-      realizedPnl: this.realizedPnl - this.totalFees,
+      realizedPnl: this.netRealizedPnl(),
       totalFees: this.totalFees,
       positions,
       orders: this.orders.filter((order) => order.type === "limit" && ["open", "partial"].includes(order.status))
@@ -185,7 +186,11 @@ export class PaperBroker {
   }
 
   persistenceRealizedPnl() {
-    return this.realizedPnl;
+    return this.netRealizedPnl();
+  }
+
+  persistenceWalletBalance() {
+    return this.walletBalance();
   }
 
   persistencePositions() {
@@ -349,7 +354,6 @@ export class PaperBroker {
 
     this.cash += releasedMargin + pnl - fee;
     this.totalFees += fee;
-    this.realizedPnl += pnl;
     this.recalculate(position);
     return { fee, pnl: pnl - fee, releasedMargin };
   }
@@ -441,13 +445,21 @@ export class PaperBroker {
     return [...this.positions.values()].reduce((sum, position) => sum + position.margin, 0);
   }
 
+  private walletBalance() {
+    return this.cash + this.positionsMargin();
+  }
+
+  private netRealizedPnl() {
+    return this.walletBalance() - this.startingCash;
+  }
+
   private dynamicInitialMargin(position: InternalPosition) {
     if (position.status !== "open") return 0;
     return position.marketValue / position.leverage;
   }
 
   private crossMetrics(activePositions = [...this.positions.values()]): CrossAccountMetrics {
-    const walletBalance = this.cash + this.positionsMargin();
+    const walletBalance = this.walletBalance();
     const openUnrealizedPnl = activePositions.reduce((sum, position) => sum + position.unrealizedPnl, 0);
     const dynamicUsedMargin = activePositions.reduce((sum, position) => sum + this.dynamicInitialMargin(position), 0);
     const equity = walletBalance + openUnrealizedPnl;
@@ -675,20 +687,28 @@ export class PaperBroker {
   private captureMutableState(): BrokerMutableState {
     return {
       cash: this.cash,
-      realizedPnl: this.realizedPnl,
       totalFees: this.totalFees,
       positions: [...this.positions.entries()].map(([symbol, position]) => [symbol, clonePosition(position)]),
-      closedPositions: this.closedPositions.map(clonePosition)
+      closedPositions: this.closedPositions.map(clonePosition),
+      orders: this.orders.map(cloneOrder)
     };
   }
 
   private restoreMutableState(state: BrokerMutableState) {
     this.cash = state.cash;
-    this.realizedPnl = state.realizedPnl;
     this.totalFees = state.totalFees;
     this.positions.clear();
     for (const [symbol, position] of state.positions) this.positions.set(symbol, clonePosition(position));
     this.closedPositions.splice(0, this.closedPositions.length, ...state.closedPositions.map(clonePosition));
+    this.orders.splice(0, this.orders.length, ...state.orders.map(cloneOrder));
+  }
+
+  runTransactional<T>(operation: () => T): { result: T; rollback: () => void } {
+    const before = this.captureMutableState();
+    return {
+      result: operation(),
+      rollback: () => this.restoreMutableState(before)
+    };
   }
 }
 
@@ -703,15 +723,11 @@ function orderId(request: CreateOrderRequest) {
   return request.clientOrderId ?? nanoid();
 }
 
-function normalizeStoredRealizedPnl(state: { realizedPnl: number; totalFees: number; positions: InternalPosition[] }) {
-  const positionNetRealizedPnl = state.positions.reduce((sum, position) => sum + position.realizedPnl, 0);
-  if (isClose(state.realizedPnl, positionNetRealizedPnl)) return state.realizedPnl + state.totalFees;
-  if (isClose(state.realizedPnl - state.totalFees, positionNetRealizedPnl)) return state.realizedPnl;
-  return state.realizedPnl + state.totalFees;
-}
-
-function isClose(left: number, right: number) {
-  return Math.abs(left - right) < 1e-8;
+function inferStartingCash(state: { cash: number; realizedPnl: number; positions: InternalPosition[] }) {
+  const openMargin = state.positions
+    .filter((position) => position.status === "open" && position.amount > 0)
+    .reduce((sum, position) => sum + position.margin, 0);
+  return state.cash + openMargin - state.realizedPnl;
 }
 
 function positiveOrUndefined(value?: number | null) {
@@ -720,6 +736,10 @@ function positiveOrUndefined(value?: number | null) {
 
 function clonePosition(position: InternalPosition): InternalPosition {
   return { ...position };
+}
+
+function cloneOrder(order: Order): Order {
+  return { ...order };
 }
 
 function weightedAverage(currentAvg: number, currentAmount: number, nextPrice: number, nextAmount: number) {

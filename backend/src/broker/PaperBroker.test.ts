@@ -112,3 +112,37 @@ test("加载历史净已实现盈亏时不重复扣减手续费", () => {
 
   assert.ok(Math.abs(broker.snapshot().realizedPnl - 1_872.32) < 1e-8);
 });
+
+test("账户级已实现盈亏以现金账本为准并包含手续费", () => {
+  const broker = new PaperBroker("account-1", "测试账户", 100_000, feeRates);
+  broker.updateTicker({ symbol: "BTC/USDT", last: 10_000, ts: Date.now() });
+
+  const open = broker.execute({
+    accountId: "account-1",
+    symbol: "BTC/USDT",
+    side: "buy",
+    type: "market",
+    amount: 1,
+    leverage: 10,
+    amountUnit: "base"
+  });
+  assert.equal(open.status, "filled");
+  assert.equal(broker.snapshot().realizedPnl, -5);
+
+  broker.updateTicker({ symbol: "BTC/USDT", last: 11_000, ts: Date.now() });
+  const close = broker.execute({
+    accountId: "account-1",
+    symbol: "BTC/USDT",
+    side: "sell",
+    type: "market",
+    amount: 1,
+    leverage: 10,
+    amountUnit: "base"
+  });
+
+  assert.equal(close.status, "filled");
+  assert.equal(broker.snapshot().realizedPnl, 989.5);
+  assert.equal(broker.persistenceRealizedPnl(), 989.5);
+  assert.equal(broker.snapshot().cash, 100_989.5);
+  assert.equal(broker.snapshot().totalFees, 10.5);
+});

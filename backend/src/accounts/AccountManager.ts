@@ -35,6 +35,7 @@ export class AccountManager {
           name: "默认模拟账户",
           kind: "paper",
           mode: "manual",
+          startingCash: config.paperStartingCash,
           cash: config.paperStartingCash,
           isActive: true
         }
@@ -86,6 +87,7 @@ export class AccountManager {
         botConfig: botConfig ?? undefined,
         botState: botState ?? undefined,
         startedAt: mode === "bot" ? new Date() : null,
+        startingCash: input.kind === "paper" ? input.startingCash ?? config.paperStartingCash : 0,
         cash: input.kind === "paper" ? input.startingCash ?? config.paperStartingCash : 0,
         isActive: false
       },
@@ -199,13 +201,19 @@ export class AccountManager {
   async updateTicker(ticker: Ticker): Promise<{ orders: Order[]; accountIds: string[] }> {
     const changed: Order[] = [];
     for (const broker of this.paperBrokers.values()) {
-      const filled = broker.updateTicker(ticker);
+      const mutation = broker.runTransactional(() => broker.updateTicker(ticker));
+      const filled = mutation.result;
+      if (filled.length > 0) {
+        try {
+          await this.persistPaperState(filled[0].accountId);
+        } catch (error) {
+          mutation.rollback();
+          throw error;
+        }
+      }
       changed.push(...filled);
     }
     const accountIds = [...new Set(changed.map((order) => order.accountId))];
-    for (const accountId of accountIds) {
-      await this.persistPaperState(accountId);
-    }
     return { orders: changed, accountIds };
   }
 
@@ -219,27 +227,44 @@ export class AccountManager {
     const accountId = request.accountId ?? this.activeAccountId;
     const broker = this.paperBrokers.get(accountId);
     if (!broker) throw new Error("模拟账户不存在");
-    const order = broker.execute({ ...request, accountId });
-    await this.persistPaperState(accountId);
-    return order;
+    const mutation = broker.runTransactional(() => broker.execute({ ...request, accountId }));
+    try {
+      await this.persistPaperState(accountId);
+      return mutation.result;
+    } catch (error) {
+      mutation.rollback();
+      throw error;
+    }
   }
 
   async cancelPaperOrderForAccount(accountId: string, orderId: string) {
     const broker = this.paperBrokers.get(accountId);
     if (!broker) throw new Error("模拟账户不存在");
-    const order = broker.cancelOrder(orderId);
+    const mutation = broker.runTransactional(() => broker.cancelOrder(orderId));
+    const order = mutation.result;
     if (!order) throw new Error("委托不存在或不可取消");
-    await this.persistPaperState(order.accountId);
-    return order;
+    try {
+      await this.persistPaperState(order.accountId);
+      return order;
+    } catch (error) {
+      mutation.rollback();
+      throw error;
+    }
   }
 
   async updatePaperPositionRiskForAccount(accountId: string, input: UpdatePositionRiskRequest) {
     const broker = this.paperBrokers.get(accountId);
     if (!broker) throw new Error("模拟账户不存在");
-    const position = broker.updatePositionRisk(input.positionId, input);
+    const mutation = broker.runTransactional(() => broker.updatePositionRisk(input.positionId, input));
+    const position = mutation.result;
     if (!position) throw new Error("仓位不存在");
-    await this.persistPaperState(accountId);
-    return this.snapshotFor(accountId);
+    try {
+      await this.persistPaperState(accountId);
+      return this.snapshotFor(accountId);
+    } catch (error) {
+      mutation.rollback();
+      throw error;
+    }
   }
 
   async runningBotAccounts(symbol?: string): Promise<BotAccountRecord[]> {
@@ -287,10 +312,17 @@ export class AccountManager {
     });
     const broker = this.paperBrokers.get(accountId);
     if (broker) {
-      for (const order of broker.snapshot().orders) {
-        broker.cancelOrder(order.id);
+      const mutation = broker.runTransactional(() => {
+        for (const order of broker.snapshot().orders) {
+          broker.cancelOrder(order.id);
+        }
+      });
+      try {
+        await this.persistPaperState(accountId);
+      } catch (error) {
+        mutation.rollback();
+        throw error;
       }
-      await this.persistPaperState(accountId);
     }
     return account;
   }
@@ -336,12 +368,19 @@ export class AccountManager {
     const snapshot = broker.snapshot();
     const positions = broker.persistencePositions();
     const orders = broker.persistenceOrders();
+    const persistedCash = broker.persistenceCash();
+    const persistedRealizedPnl = broker.persistenceRealizedPnl();
+    const persistedWalletBalance = broker.persistenceWalletBalance();
+    assertAccountingClose(persistedWalletBalance, persistedCash + positions
+      .filter((position) => position.status === "open" && position.amount > 0)
+      .reduce((sum, position) => sum + position.margin, 0), "钱包余额");
+    assertAccountingClose(persistedRealizedPnl, snapshot.realizedPnl, "已实现盈亏");
     await prisma.$transaction(async (tx) => {
       await tx.account.update({
         where: { id: accountId },
         data: {
-          cash: broker.persistenceCash(),
-          realizedPnl: broker.persistenceRealizedPnl(),
+          cash: persistedCash,
+          realizedPnl: persistedRealizedPnl,
           totalFees: snapshot.totalFees
         }
       });
@@ -414,10 +453,17 @@ export class AccountManager {
   private async cancelOpenOrders(accountId: string) {
     const broker = this.paperBrokers.get(accountId);
     if (!broker) return;
-    for (const order of broker.snapshot().orders) {
-      broker.cancelOrder(order.id);
+    const mutation = broker.runTransactional(() => {
+      for (const order of broker.snapshot().orders) {
+        broker.cancelOrder(order.id);
+      }
+    });
+    try {
+      await this.persistPaperState(accountId);
+    } catch (error) {
+      mutation.rollback();
+      throw error;
     }
-    await this.persistPaperState(accountId);
   }
 
   private assertNoOpenPositions(accountId: string, message: string) {
@@ -446,7 +492,7 @@ export class AccountManager {
     if (!broker) return;
     const positions = broker.snapshot().positions.filter((position) => position.status === "open" && position.amount > 0);
     for (const position of positions) {
-      const order = broker.execute({
+      const mutation = broker.runTransactional(() => broker.execute({
         accountId,
         symbol: position.symbol,
         side: position.side === "long" ? "sell" : "buy",
@@ -454,8 +500,14 @@ export class AccountManager {
         amount: position.amount,
         amountUnit: "base",
         leverage: position.leverage
-      });
-      await this.persistPaperState(accountId);
+      }));
+      const order = mutation.result;
+      try {
+        await this.persistPaperState(accountId);
+      } catch (error) {
+        mutation.rollback();
+        throw error;
+      }
       if (order.status === "rejected") {
         throw new Error(`无法自动平仓 ${position.symbol}: ${order.reason ?? "下单失败"}`);
       }
@@ -463,13 +515,15 @@ export class AccountManager {
   }
 
   private loadPaperBroker(account: LoadedAccount) {
-    const broker = new PaperBroker(account.id, account.name, account.cash, {
+    const startingCash = account.startingCash || config.paperStartingCash;
+    const broker = new PaperBroker(account.id, account.name, startingCash, {
       maker: config.paperMakerFeeRate,
       taker: config.paperTakerFeeRate,
       limitFillRatio: config.paperLimitFillRatio,
       maxOpenLimitOrders: config.paperMaxOpenLimitOrders
     });
     broker.load({
+      startingCash,
       cash: account.cash,
       realizedPnl: account.realizedPnl,
       totalFees: account.totalFees,
@@ -686,6 +740,12 @@ function maxDrawdown(values: number[]) {
     if (peak > 0) drawdown = Math.max(drawdown, (peak - value) / peak);
   }
   return drawdown;
+}
+
+function assertAccountingClose(actual: number, expected: number, label: string) {
+  if (Math.abs(actual - expected) > 1e-6) {
+    throw new Error(`${label}账务校验失败: actual=${actual}, expected=${expected}`);
+  }
 }
 
 function deserializePosition(position: DbPosition): Position {

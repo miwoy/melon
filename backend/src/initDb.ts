@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS "Account" (
   "id" TEXT NOT NULL PRIMARY KEY,
   "name" TEXT NOT NULL,
   "kind" TEXT NOT NULL,
+  "startingCash" REAL NOT NULL DEFAULT 0,
   "cash" REAL NOT NULL,
   "realizedPnl" REAL NOT NULL DEFAULT 0,
   "totalFees" REAL NOT NULL DEFAULT 0,
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS "Account" (
 );
 `);
 
+await addColumnIfMissing("Account", "startingCash", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Account", "mode", "TEXT NOT NULL DEFAULT 'manual'");
 await addColumnIfMissing("Account", "botType", "TEXT");
 await addColumnIfMissing("Account", "botStatus", "TEXT");
@@ -36,6 +38,7 @@ await addColumnIfMissing("Account", "stoppedAt", "DATETIME");
 await addColumnIfMissing("Account", "stopReason", "TEXT");
 await addColumnIfMissing("Account", "archivedAt", "DATETIME");
 await prisma.$executeRawUnsafe(`UPDATE "Account" SET "mode" = COALESCE("mode", 'manual');`);
+await prisma.$executeRawUnsafe(`UPDATE "Account" SET "startingCash" = ${Number(process.env.PAPER_STARTING_CASH ?? 100_000)} WHERE "kind" = 'paper' AND "startingCash" = 0;`);
 
 await prisma.$executeRawUnsafe(`
 CREATE TABLE IF NOT EXISTS "Position" (
@@ -167,11 +170,14 @@ SET "totalFees" = COALESCE((
 `);
 await prisma.$executeRawUnsafe(`
 UPDATE "Account"
-SET "realizedPnl" = COALESCE((
-  SELECT SUM("realizedPnl")
+SET "realizedPnl" = "cash" + COALESCE((
+  SELECT SUM("margin")
   FROM "Position"
   WHERE "Position"."accountId" = "Account"."id"
-), 0);
+    AND "Position"."status" = 'open'
+    AND "Position"."amount" > 0
+), 0) - "startingCash"
+WHERE "kind" = 'paper';
 `);
 
 await prisma.$executeRawUnsafe(`
