@@ -188,9 +188,10 @@ app.get("/ws", { websocket: true }, (socket, request) => {
 
 const marketStream = new BinanceMarketStream(config.defaultSymbols, config.marketWsReconnectMs, (ticker) => {
   lastMarketTickAt = Date.now();
-  void handleTicker(ticker);
+  enqueueTicker(ticker);
 });
 let lastMarketTickAt = 0;
+let tickerQueue = Promise.resolve();
 
 const restPollTimer = setInterval(() => {
   const stale = Date.now() - lastMarketTickAt > config.marketRestPollSeconds * 1000;
@@ -198,7 +199,7 @@ const restPollTimer = setInterval(() => {
   for (const symbol of config.defaultSymbols) {
     exchange
       .fetchTicker(symbol)
-      .then((ticker) => handleTicker(ticker))
+      .then((ticker) => enqueueTicker(ticker))
       .catch((error) => app.log.warn({ err: error, symbol }, "REST ticker fallback failed"));
   }
 }, config.marketRestPollSeconds * 1000);
@@ -207,12 +208,18 @@ const tickerStatsTimer = setInterval(() => {
   for (const symbol of config.defaultSymbols) {
     exchange
       .fetchTicker(symbol)
-      .then((ticker) => handleTicker(ticker))
+      .then((ticker) => enqueueTicker(ticker))
       .catch((error) => app.log.warn({ err: error, symbol }, "24h ticker stats refresh failed"));
   }
 }, 30_000);
 
 const authSweepTimer = setInterval(() => auth.sweep(), 60_000);
+
+function enqueueTicker(ticker: Ticker) {
+  tickerQueue = tickerQueue
+    .then(() => handleTicker(ticker))
+    .catch((error) => app.log.warn({ err: error, symbol: ticker.symbol }, "ticker processing failed"));
+}
 
 async function handleTicker(ticker: Ticker) {
   const mergedTicker = mergeTicker(ticker);

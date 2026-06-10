@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useMemo, useState, type FormEvent } from "react";
+import { StrictMode, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { Activity, Archive, BarChart3, CircleDollarSign, History, ListPlus, Send, Trash2, WalletCards, X } from "lucide-react";
 import { ApiError, api, getAuthToken, setAuthToken } from "./lib/api";
@@ -32,9 +32,10 @@ const defaultRandomBotConfig: RandomBotConfig = {
   maxDrawdownPercent: 0.2,
   entryIntervalSeconds: 30
 };
-type ModalView = "history" | "account" | "close" | "risk" | "stats" | "accountAction" | null;
+type ModalView = "history" | "account" | "close" | "risk" | "stats" | "accountAction" | "orderConfirm" | null;
 type CloseMode = "partial" | "all";
 type AccountAction = "archive" | "delete";
+type PendingOrder = { side: "buy" | "sell" };
 type CurrentOrderItem =
   | { kind: "limit"; id: string; order: Order }
   | { kind: "takeProfit" | "stopLoss"; id: string; position: Position; triggerPrice: number };
@@ -69,10 +70,13 @@ function App() {
   const [takeProfitPrice, setTakeProfitPrice] = useState("");
   const [stopLossPrice, setStopLossPrice] = useState("");
   const [accountAction, setAccountAction] = useState<AccountAction | null>(null);
+  const [pendingOrder, setPendingOrder] = useState<PendingOrder | null>(null);
+  const [orderSubmitting, setOrderSubmitting] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [authorized, setAuthorized] = useState(false);
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+  const accountSwitchGuard = useRef({ accountId: "", until: 0 });
 
   useEffect(() => {
     api.authStatus().then((status) => {
@@ -132,7 +136,11 @@ function App() {
             | { type: "account"; data: AccountSnapshot }
             | { type: "order"; data: Order };
           if (message.type === "tickers") setTickers(message.data);
-          if (message.type === "account") setAccount(message.data);
+          if (message.type === "account") {
+            const guard = accountSwitchGuard.current;
+            if (guard.accountId && message.data.accountId !== guard.accountId && Date.now() < guard.until) return;
+            setAccount(message.data);
+          }
         } catch {
           setConnection("消息异常");
         }
@@ -180,37 +188,50 @@ function App() {
     orderType,
     maxInputAmount
   });
-  const canSubmit = !validationError;
+  const canSubmit = !validationError && !orderSubmitting;
   const amountInvalid = !Number.isFinite(numericAmount) || numericAmount <= 0 || (maxInputAmount > 0 && numericAmount > maxInputAmount);
   const leverageInvalid = !Number.isFinite(numericLeverage) || numericLeverage <= 0;
   const priceInvalid = orderType === "limit" && !validReferencePrice;
 
-  async function submit(side: "buy" | "sell") {
+  function openOrderConfirm(side: "buy" | "sell") {
     if (!canSubmit) return;
+    setPendingOrder({ side });
+    setModal("orderConfirm");
+  }
+
+  async function submitConfirmedOrder() {
+    if (!pendingOrder || !canSubmit || orderSubmitting) return;
+    setOrderSubmitting(true);
     try {
       const order = await api.order({
         symbol: selectedSymbol,
-        side,
+        side: pendingOrder.side,
         type: orderType,
         amount: Number(amount),
         amountUnit,
         price: orderType === "limit" ? Number(price) : undefined,
         leverage: Number(leverage)
       });
-      if (order.type === "limit" && ["open", "partial"].includes(order.status)) {
-        setAccount((current) => ({ ...current, orders: [order, ...current.orders] }));
-      }
+      setAccount(await api.account());
+      setPendingOrder(null);
+      setModal(null);
+      if (order.status === "rejected") console.warn(order.reason);
     } catch (error) {
       handleAuthError(error);
+    } finally {
+      setOrderSubmitting(false);
     }
   }
 
   async function switchAccount(accountId: string) {
     try {
+      accountSwitchGuard.current = { accountId, until: Date.now() + 3000 };
       const snapshot = await api.switchAccount(accountId);
       setAccount(snapshot);
       setAccounts((current) => current.map((item) => ({ ...item, isActive: item.id === accountId })));
+      accountSwitchGuard.current = { accountId, until: Date.now() + 2000 };
     } catch (error) {
+      accountSwitchGuard.current = { accountId: "", until: 0 };
       handleAuthError(error);
     }
   }
@@ -435,8 +456,8 @@ function App() {
           </div>
           {validationError && <div className="trade-error">{validationError}</div>}
           <div className="actions">
-            <button className="buy" disabled={!canSubmit} onClick={() => submit("buy")}><Send size={16} />买入/做多</button>
-            <button className="sell" disabled={!canSubmit} onClick={() => submit("sell")}><Send size={16} />卖出/做空</button>
+            <button className="buy" disabled={!canSubmit} onClick={() => openOrderConfirm("buy")}><Send size={16} />买入/做多</button>
+            <button className="sell" disabled={!canSubmit} onClick={() => openOrderConfirm("sell")}><Send size={16} />卖出/做空</button>
           </div>
           </>}
         </div>
@@ -459,6 +480,7 @@ function App() {
       {modal === "stats" && <Modal title="账户统计" onClose={() => setModal(null)}><AccountStatsView accountId={account.accountId} /></Modal>}
       {modal === "account" && <Modal title="新增账户" onClose={() => setModal(null)}><AccountForm name={newAccountName} kind={newAccountKind} mode={newAccountMode} botType={newBotType} botConfig={newBotConfig} botDefinitions={botDefinitions} symbols={symbols} cash={newAccountCash} setName={setNewAccountName} setKind={setNewAccountKind} setMode={setNewAccountMode} setBotType={setNewBotType} setBotConfig={setNewBotConfig} setCash={setNewAccountCash} onSubmit={createAccount} /></Modal>}
       {modal === "accountAction" && accountAction && <Modal title={accountAction === "archive" ? "确认归档账户" : "确认删除账户"} onClose={() => { setAccountAction(null); setModal(null); }}><ConfirmAccountAction action={accountAction} account={account} onSubmit={executeAccountAction} onCancel={() => { setAccountAction(null); setModal(null); }} /></Modal>}
+      {modal === "orderConfirm" && pendingOrder && <Modal title="确认下单" onClose={() => { if (!orderSubmitting) { setPendingOrder(null); setModal(null); } }}><ConfirmOrderForm side={pendingOrder.side} symbol={selectedSymbol} orderType={orderType} amount={numericAmount} amountUnit={amountUnit} price={orderType === "limit" ? Number(price) : undefined} leverage={numericLeverage} estimatedBaseAmount={estimatedBaseAmount} maxInputAmount={maxInputAmount} submitting={orderSubmitting} onSubmit={submitConfirmedOrder} onCancel={() => { if (!orderSubmitting) { setPendingOrder(null); setModal(null); } }} /></Modal>}
       {modal === "close" && closePosition && <Modal title={closeMode === "all" ? "确认一键平仓" : "平仓"} onClose={() => setModal(null)}><ClosePositionForm position={closePosition} amount={closeAmount} percent={closePercent} mode={closeMode} setAmount={updateCloseAmount} setPercent={updateClosePercent} onSubmit={executeClosePosition} /></Modal>}
       {modal === "risk" && riskPosition && <Modal title="止盈止损" onClose={() => setModal(null)}><PositionRiskForm position={riskPosition} takeProfitPrice={takeProfitPrice} stopLossPrice={stopLossPrice} setTakeProfitPrice={setTakeProfitPrice} setStopLossPrice={setStopLossPrice} onSubmit={savePositionRisk} /></Modal>}
     </main>
@@ -602,6 +624,52 @@ function ConfirmAccountAction({ action, account, onSubmit, onCancel }: { action:
     <div className="confirm-actions">
       <button className="neutral ghost" onClick={onCancel}>取消</button>
       <button className={isDelete ? "sell" : "neutral"} onClick={onSubmit}>{isDelete ? "确认删除" : "确认归档"}</button>
+    </div>
+  </div>;
+}
+
+function ConfirmOrderForm({
+  side,
+  symbol,
+  orderType,
+  amount,
+  amountUnit,
+  price,
+  leverage,
+  estimatedBaseAmount,
+  maxInputAmount,
+  submitting,
+  onSubmit,
+  onCancel
+}: {
+  side: "buy" | "sell";
+  symbol: string;
+  orderType: OrderType;
+  amount: number;
+  amountUnit: AmountUnit;
+  price?: number;
+  leverage: number;
+  estimatedBaseAmount: number;
+  maxInputAmount: number;
+  submitting: boolean;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  return <div className="modal-form">
+    <div className="confirm-box">请确认订单参数。提交过程中按钮会锁定，避免重复下单。</div>
+    <dl className="confirm-list">
+      <div><dt>交易对</dt><dd>{symbol}</dd></div>
+      <div><dt>方向</dt><dd className={side === "buy" ? "up" : "down"}>{sideLabel(side)}</dd></div>
+      <div><dt>订单类型</dt><dd>{orderTypeLabel(orderType)}</dd></div>
+      <div><dt>杠杆</dt><dd>{leverage}x</dd></div>
+      <div><dt>下单数量</dt><dd>{amountUnit === "quote" ? money(amount) : `${num(amount)} ${baseSymbol(symbol)}`}</dd></div>
+      <div><dt>预计币数量</dt><dd>{num(Number.isFinite(estimatedBaseAmount) ? estimatedBaseAmount : 0)} {baseSymbol(symbol)}</dd></div>
+      <div><dt>{orderType === "limit" ? "限价价格" : "成交价格"}</dt><dd>{orderType === "limit" && price ? money(price) : "按市场价"}</dd></div>
+      <div><dt>预计最大可下单</dt><dd>{amountUnit === "quote" ? money(maxInputAmount) : `${num(maxInputAmount)} ${baseSymbol(symbol)}`}</dd></div>
+    </dl>
+    <div className="confirm-actions">
+      <button className="neutral ghost" disabled={submitting} onClick={onCancel}>取消</button>
+      <button className={side === "buy" ? "buy" : "sell"} disabled={submitting} onClick={onSubmit}>{submitting ? "提交中" : "确认下单"}</button>
     </div>
   </div>;
 }
