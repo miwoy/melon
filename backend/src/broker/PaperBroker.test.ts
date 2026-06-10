@@ -74,3 +74,41 @@ test("未完成限价委托达到上限时拒绝新增挂单", () => {
   assert.match(second.reason ?? "", /未完成限价委托/);
   assert.equal(broker.snapshot().orders.length, 1);
 });
+
+test("加载历史净已实现盈亏时不重复扣减手续费", () => {
+  const broker = new PaperBroker("account-1", "测试账户", 8_103.67, feeRates);
+  broker.load({
+    cash: 8_103.67,
+    realizedPnl: 1_872.32,
+    totalFees: 1_483.31,
+    orders: [],
+    positions: [{
+      id: "position-1",
+      symbol: "BTC/USDT",
+      base: "BTC",
+      quote: "USDT",
+      side: "long",
+      status: "open",
+      signedAmount: 1,
+      amount: 1,
+      openedAmount: 1,
+      closedAmount: 0.5,
+      avgEntry: 10_000,
+      closeAvgPrice: 12_000,
+      markPrice: 10_000,
+      marketValue: 10_000,
+      liquidationPrice: 0,
+      leverage: 10,
+      margin: 1_000,
+      openedMargin: 1_000,
+      realizedPnl: 1_872.32,
+      unrealizedPnl: 0,
+      fees: 1_483.31,
+      netPnl: 1_872.32,
+      roi: 1.87232,
+      openedAt: Date.now()
+    }]
+  });
+
+  assert.ok(Math.abs(broker.snapshot().realizedPnl - 1_872.32) < 1e-8);
+});

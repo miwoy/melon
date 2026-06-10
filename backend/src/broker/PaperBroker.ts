@@ -53,7 +53,7 @@ export class PaperBroker {
   load(state: { cash: number; realizedPnl: number; totalFees: number; positions: InternalPosition[]; orders: Order[] }) {
     this.cash = state.cash;
     this.totalFees = state.totalFees;
-    this.realizedPnl = state.realizedPnl;
+    this.realizedPnl = normalizeStoredRealizedPnl(state);
     this.positions.clear();
     this.closedPositions.splice(0);
     for (const position of state.positions) {
@@ -701,6 +701,17 @@ function touchOrder(order: Order) {
 
 function orderId(request: CreateOrderRequest) {
   return request.clientOrderId ?? nanoid();
+}
+
+function normalizeStoredRealizedPnl(state: { realizedPnl: number; totalFees: number; positions: InternalPosition[] }) {
+  const positionNetRealizedPnl = state.positions.reduce((sum, position) => sum + position.realizedPnl, 0);
+  if (isClose(state.realizedPnl, positionNetRealizedPnl)) return state.realizedPnl + state.totalFees;
+  if (isClose(state.realizedPnl - state.totalFees, positionNetRealizedPnl)) return state.realizedPnl;
+  return state.realizedPnl + state.totalFees;
+}
+
+function isClose(left: number, right: number) {
+  return Math.abs(left - right) < 1e-8;
 }
 
 function positiveOrUndefined(value?: number | null) {
