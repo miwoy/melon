@@ -15,7 +15,7 @@ import type { CreateOrderRequest, Ticker } from "./types.js";
 import { EventHub } from "./ws/EventHub.js";
 
 const app = Fastify({ logger: true });
-await app.register(cors, { origin: true });
+await app.register(cors, { origin: config.corsOrigins });
 await app.register(websocket);
 
 const exchange = new BinanceExchange(config);
@@ -126,8 +126,9 @@ app.delete("/api/accounts/:id", async (request, reply) => {
 app.post("/api/bots/stop", async (request, reply) => {
   const parsed = accountQuerySchema.safeParse(request.query);
   if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+  if (!parsed.data.accountId) return reply.code(400).send({ error: "必须指定账户" });
   try {
-    const accountId = parsed.data.accountId ?? accountManager.activeId();
+    const accountId = parsed.data.accountId;
     await accountManager.stopBot(accountId, "用户终止机器人", "stopped");
     const snapshot = await accountManager.snapshotFor(accountId);
     hub.broadcastAccount(accountId, { type: "account", data: snapshot });
@@ -171,9 +172,8 @@ app.delete("/api/orders/:id", async (request, reply) => {
   try {
     const query = accountQuerySchema.safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: query.error.flatten() });
-    const order = query.data.accountId
-      ? await accountManager.cancelPaperOrderForAccount(query.data.accountId, parsed.data.id)
-      : await accountManager.cancelPaperOrder(parsed.data.id);
+    if (!query.data.accountId) return reply.code(400).send({ error: "必须指定账户" });
+    const order = await accountManager.cancelPaperOrderForAccount(query.data.accountId, parsed.data.id);
     hub.broadcast({ type: "order", data: order });
     hub.broadcastAccount(order.accountId, { type: "account", data: await accountManager.snapshotFor(order.accountId) });
     return order;
@@ -190,9 +190,8 @@ app.patch("/api/positions/:id/risk", async (request, reply) => {
   try {
     const query = accountQuerySchema.safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: query.error.flatten() });
-    const snapshot = query.data.accountId
-      ? await accountManager.updatePaperPositionRiskForAccount(query.data.accountId, { positionId: params.data.id, ...body.data })
-      : await accountManager.updatePaperPositionRisk({ positionId: params.data.id, ...body.data });
+    if (!query.data.accountId) return reply.code(400).send({ error: "必须指定账户" });
+    const snapshot = await accountManager.updatePaperPositionRiskForAccount(query.data.accountId, { positionId: params.data.id, ...body.data });
     hub.broadcastAccount(snapshot.accountId, { type: "account", data: snapshot });
     return snapshot;
   } catch (error) {
@@ -201,15 +200,33 @@ app.patch("/api/positions/:id/risk", async (request, reply) => {
 });
 
 app.get("/ws", { websocket: true }, (socket, request) => {
-  if (!auth.verify(tokenFromWsUrl(request.url))) {
-    socket.close(1008, "unauthorized");
+  const accountId = accountIdFromWsUrl(request.url);
+  const authenticate = () => {
+    hub.add(socket, { accountId });
+    socket.send(JSON.stringify({ type: "tickers", data: Object.fromEntries(tickers) }));
+    const snapshotPromise = accountId ? accountManager.snapshotFor(accountId) : accountManager.snapshot();
+    snapshotPromise.then((snapshot) => socket.send(JSON.stringify({ type: "account", data: snapshot })));
+  };
+
+  if (!auth.required() || auth.verify(tokenFromWsUrl(request.url))) {
+    authenticate();
     return;
   }
-  const accountId = accountIdFromWsUrl(request.url);
-  hub.add(socket, { accountId });
-  socket.send(JSON.stringify({ type: "tickers", data: Object.fromEntries(tickers) }));
-  const snapshotPromise = accountId ? accountManager.snapshotFor(accountId) : accountManager.snapshot();
-  snapshotPromise.then((snapshot) => socket.send(JSON.stringify({ type: "account", data: snapshot })));
+
+  const authTimer = setTimeout(() => socket.close(1008, "unauthorized"), 5000);
+  socket.once("message", (raw) => {
+    clearTimeout(authTimer);
+    try {
+      const message = JSON.parse(String(raw)) as { type?: string; token?: string };
+      if (message.type !== "auth" || !auth.verify(message.token)) {
+        socket.close(1008, "unauthorized");
+        return;
+      }
+      authenticate();
+    } catch {
+      socket.close(1008, "unauthorized");
+    }
+  });
 });
 
 const marketStream = new BinanceMarketStream(config.defaultSymbols, config.marketWsReconnectMs, (ticker) => {
@@ -279,9 +296,8 @@ function mergeTicker(ticker: Ticker): Ticker {
 }
 
 async function submitOrder(request: CreateOrderRequest) {
-  const account = request.accountId
-    ? await prisma.account.findUnique({ where: { id: request.accountId } })
-    : await accountManager.activeAccount();
+  if (!request.accountId) return rejectedOrder(request, "", "必须指定账户");
+  const account = await prisma.account.findUnique({ where: { id: request.accountId } });
   if (!account || account.archivedAt) {
     return rejectedOrder(request, request.accountId ?? "", "账户不存在");
   }
@@ -298,8 +314,10 @@ async function submitOrder(request: CreateOrderRequest) {
       return rejectedOrder(request, account.id, "真实盘交易需要配置 BINANCE_API_KEY 和 BINANCE_SECRET");
     }
     const result = await exchange.createOrder(request.symbol, request.side, request.type, request.amount, request.price);
+    const now = Date.now();
     return {
       id: String(result.id),
+      clientOrderId: request.clientOrderId,
       symbol: request.symbol,
       side: request.side,
       type: request.type,
@@ -316,7 +334,9 @@ async function submitOrder(request: CreateOrderRequest) {
       margin: 0,
       status: Number(result.remaining ?? 0) > 0 ? "partial" as const : "filled" as const,
       accountId: account.id,
-      createdAt: Date.now()
+      createdAt: now,
+      updatedAt: now,
+      filledAt: Number(result.remaining ?? 0) > 0 ? undefined : now
     };
   }
 
@@ -338,8 +358,9 @@ function normalizeOrderAmount(request: CreateOrderRequest):
 }
 
 function rejectedOrder(request: CreateOrderRequest, accountId: string, reason: string) {
+  const now = Date.now();
   return {
-    id: request.clientOrderId ?? "rejected-" + Date.now(),
+    id: request.clientOrderId ?? "rejected-" + now,
     clientOrderId: request.clientOrderId,
     symbol: request.symbol,
     side: request.side,
@@ -358,7 +379,8 @@ function rejectedOrder(request: CreateOrderRequest, accountId: string, reason: s
     status: "rejected" as const,
     accountId,
     reason,
-    createdAt: Date.now()
+    createdAt: now,
+    updatedAt: now
   };
 }
 

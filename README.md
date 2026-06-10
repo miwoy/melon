@@ -23,6 +23,14 @@ npm run dev
 
 前端默认运行在 `http://localhost:5173`，后端默认运行在 `http://localhost:4000`。
 
+常用检查命令：
+
+```bash
+npm test
+npm run typecheck
+npm run build
+```
+
 ## 登录授权
 
 后端支持通过 `APP_PASSWORD` 开启访问密码：
@@ -30,6 +38,7 @@ npm run dev
 ```env
 APP_PASSWORD=你的访问密码
 AUTH_TOKEN_TTL_SECONDS=43200
+CORS_ORIGINS=https://melon.miwoes.com
 ```
 
 `APP_PASSWORD` 为空时不启用登录保护。启用后，前端只会把密码提交给后端换取临时授权密钥，之后请求和 WebSocket 使用该密钥授权；前端不会保存明文密码。
@@ -64,6 +73,7 @@ AUTH_TOKEN_TTL_SECONDS=43200
 - 吃单手续费：按 `名义价值 * PAPER_TAKER_FEE_RATE` 收取，默认 `0.0005`，也就是 `0.05%`。
 - 市价单按吃单计算；限价单如果提交后立刻成交按吃单计算，如果先挂单后触价成交按挂单计算。
 - 当前采用单交易对净持仓模型，同一交易对不会同时保留多头和空头两条仓位。
+- 模拟撮合器会限制每个账户当前未完成限价委托数量，默认 `PAPER_MAX_OPEN_LIMIT_ORDERS=200`。
 
 ## 目录结构
 
@@ -79,6 +89,8 @@ frontend/src
 ├── lib/api.ts          # REST 客户端
 ├── main.tsx            # 仪表盘
 └── styles.css
+shared
+└── types.d.ts          # 前后端共享类型
 ```
 
 ## API

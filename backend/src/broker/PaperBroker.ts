@@ -9,6 +9,7 @@ type FeeRates = {
   maker: number;
   taker: number;
   limitFillRatio: number;
+  maxOpenLimitOrders: number;
 };
 
 type FillResult =
@@ -21,6 +22,14 @@ type CrossAccountMetrics = {
   equity: number;
   openUnrealizedPnl: number;
   walletBalance: number;
+};
+
+type BrokerMutableState = {
+  cash: number;
+  realizedPnl: number;
+  totalFees: number;
+  positions: Array<[string, InternalPosition]>;
+  closedPositions: InternalPosition[];
 };
 
 export class PaperBroker {
@@ -43,14 +52,8 @@ export class PaperBroker {
 
   load(state: { cash: number; realizedPnl: number; totalFees: number; positions: InternalPosition[]; orders: Order[] }) {
     this.cash = state.cash;
-    const orderFees = state.orders
-      .filter((order) => ["filled", "partial"].includes(order.status))
-      .reduce((sum, order) => sum + order.fee, 0);
-    const positionRealizedPnl = state.positions.reduce((sum, position) => sum + position.realizedPnl, 0);
-    this.totalFees = orderFees || state.totalFees;
-    this.realizedPnl = isClose(state.realizedPnl - this.totalFees, positionRealizedPnl)
-      ? state.realizedPnl
-      : positionRealizedPnl + this.totalFees;
+    this.totalFees = state.totalFees;
+    this.realizedPnl = state.realizedPnl;
     this.positions.clear();
     this.closedPositions.splice(0);
     for (const position of state.positions) {
@@ -81,7 +84,7 @@ export class PaperBroker {
       const remainingAmount = this.remainingAmount(order);
       if (remainingAmount <= 0) continue;
       const fillAmount = this.nextLimitFillAmount(order);
-      const result = this.applyFill(
+      const result = this.applyFillAtomic(
         {
           symbol: order.symbol,
           side: order.side,
@@ -97,7 +100,7 @@ export class PaperBroker {
       if (!result.ok) {
         order.status = "rejected";
         order.reason = result.reason;
-        changedTimestamp(order);
+        touchOrder(order);
         changed.push(order);
         continue;
       }
@@ -122,6 +125,9 @@ export class PaperBroker {
 
     if (request.type === "limit") {
       if (!request.price) return this.reject(request, "限价单必须填写价格");
+      if (this.openLimitOrderCount() >= this.maxOpenLimitOrders()) {
+        return this.reject(request, `当前未完成限价委托已达到 ${this.maxOpenLimitOrders()} 条上限`);
+      }
       if (!ticker || !this.shouldFillLimitRequest(request, ticker.last)) {
         const order = this.order(request, request.price, "open", 0, 0);
         this.pushOrder(order);
@@ -141,7 +147,7 @@ export class PaperBroker {
     if (!order || order.type !== "limit" || !["open", "partial"].includes(order.status)) return null;
     order.status = "canceled";
     order.reason = "用户取消委托";
-    changedTimestamp(order);
+    touchOrder(order);
     return order;
   }
 
@@ -219,6 +225,13 @@ export class PaperBroker {
     return this.orders;
   }
 
+  private applyFillAtomic(request: CreateOrderRequest, price: number, feeRate: number): FillResult {
+    const before = this.captureMutableState();
+    const result = this.applyFill(request, price, feeRate);
+    if (!result.ok) this.restoreMutableState(before);
+    return result;
+  }
+
   private applyFill(request: CreateOrderRequest, price: number, feeRate: number): FillResult {
     const [base, quote] = request.symbol.split("/");
     const existing = this.positions.get(request.symbol);
@@ -272,7 +285,7 @@ export class PaperBroker {
   }
 
   private fill(request: CreateOrderRequest, price: number, feeRate: number, id = orderId(request)): Order {
-    const result = this.applyFill(request, price, feeRate);
+    const result = this.applyFillAtomic(request, price, feeRate);
     if (!result.ok) return this.reject(request, result.reason);
     const order = this.order(request, price, "filled", 0, 0, id);
     this.applyOrderFill(order, result);
@@ -283,7 +296,7 @@ export class PaperBroker {
   private fillLimit(request: CreateOrderRequest, price: number, feeRate: number): Order {
     const order = this.order(request, price, "open", 0, 0);
     const fillAmount = Math.min(request.amount, Math.max(this.limitFillRatio() * request.amount, 0));
-    const result = this.applyFill({ ...request, amount: fillAmount }, price, feeRate);
+    const result = this.applyFillAtomic({ ...request, amount: fillAmount }, price, feeRate);
     if (!result.ok) return this.reject(request, result.reason);
     this.applyOrderFill(order, result);
     this.pushOrder(order);
@@ -566,7 +579,7 @@ export class PaperBroker {
       if (order.symbol !== symbol || order.type !== "limit" || !["open", "partial"].includes(order.status)) continue;
       order.status = "canceled";
       order.reason = reason;
-      changedTimestamp(order);
+      touchOrder(order);
       changed.push(order);
     }
     return changed;
@@ -587,6 +600,15 @@ export class PaperBroker {
     return Math.min(Math.max(this.feeRates.limitFillRatio, 0.01), 1);
   }
 
+  private maxOpenLimitOrders() {
+    if (!Number.isFinite(this.feeRates.maxOpenLimitOrders)) return 200;
+    return Math.max(Math.trunc(this.feeRates.maxOpenLimitOrders), 1);
+  }
+
+  private openLimitOrderCount() {
+    return this.orders.filter((order) => order.type === "limit" && ["open", "partial"].includes(order.status)).length;
+  }
+
   private applyOrderFill(order: Order, result: Extract<FillResult, { ok: true }>) {
     const previousFilled = order.filledAmount || 0;
     const nextFilled = Math.min(order.amount, previousFilled + result.filledAmount);
@@ -601,7 +623,7 @@ export class PaperBroker {
     order.margin += result.margin;
     order.positionId = order.positionId ?? result.positionId;
     order.status = order.remainingAmount > 0 ? "partial" : "filled";
-    changedTimestamp(order);
+    touchOrder(order);
   }
 
   private reject(request: CreateOrderRequest, reason: string): Order {
@@ -618,6 +640,7 @@ export class PaperBroker {
     margin: number,
     id = orderId(request)
   ): Order {
+    const now = Date.now();
     return {
       id,
       clientOrderId: request.clientOrderId,
@@ -637,7 +660,9 @@ export class PaperBroker {
       margin,
       status,
       accountId: this.accountId,
-      createdAt: Date.now()
+      createdAt: now,
+      updatedAt: now,
+      filledAt: status === "filled" ? now : undefined
     };
   }
 
@@ -646,22 +671,44 @@ export class PaperBroker {
     if (index >= 0) this.orders.splice(index, 1);
     this.orders.unshift(order);
   }
+
+  private captureMutableState(): BrokerMutableState {
+    return {
+      cash: this.cash,
+      realizedPnl: this.realizedPnl,
+      totalFees: this.totalFees,
+      positions: [...this.positions.entries()].map(([symbol, position]) => [symbol, clonePosition(position)]),
+      closedPositions: this.closedPositions.map(clonePosition)
+    };
+  }
+
+  private restoreMutableState(state: BrokerMutableState) {
+    this.cash = state.cash;
+    this.realizedPnl = state.realizedPnl;
+    this.totalFees = state.totalFees;
+    this.positions.clear();
+    for (const [symbol, position] of state.positions) this.positions.set(symbol, clonePosition(position));
+    this.closedPositions.splice(0, this.closedPositions.length, ...state.closedPositions.map(clonePosition));
+  }
 }
 
-function changedTimestamp(order: Order) {
-  order.createdAt = order.createdAt || Date.now();
+function touchOrder(order: Order) {
+  const now = Date.now();
+  order.createdAt = order.createdAt || now;
+  order.updatedAt = now;
+  if (order.status === "filled") order.filledAt = now;
 }
 
 function orderId(request: CreateOrderRequest) {
   return request.clientOrderId ?? nanoid();
 }
 
-function isClose(left: number, right: number) {
-  return Math.abs(left - right) < 1e-8;
-}
-
 function positiveOrUndefined(value?: number | null) {
   return value && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function clonePosition(position: InternalPosition): InternalPosition {
+  return { ...position };
 }
 
 function weightedAverage(currentAvg: number, currentAmount: number, nextPrice: number, nextAmount: number) {

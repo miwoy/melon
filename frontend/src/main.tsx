@@ -123,10 +123,12 @@ function App() {
     const connect = () => {
       const token = getAuthToken();
       const params = new URLSearchParams();
-      if (token) params.set("token", token);
       params.set("accountId", account.accountId);
       ws = new WebSocket(`${protocol}://${window.location.host}/ws?${params.toString()}`);
-      ws.onopen = () => setConnection("实时连接");
+      ws.onopen = () => {
+        if (token) ws?.send(JSON.stringify({ type: "auth", token }));
+        setConnection("实时连接");
+      };
       ws.onclose = (event) => {
         if (event.code === 1008) {
           setAuthToken("");
@@ -823,7 +825,7 @@ function OrderHistory({ accountId }: { accountId: string }) {
   }, [accountId, page]);
   if (!data) return <EmptyState text="正在加载订单" />;
   if (data.total === 0) return <EmptyState text="暂无订单" />;
-  return <><div className="table-scroll"><table><thead><tr><th>时间</th><th>交易对</th><th>方向</th><th>类型</th><th>委托数量</th><th>已成交</th><th>剩余</th><th>委托/成交价</th><th>杠杆</th><th>手续费</th><th>平仓盈亏</th><th>状态</th></tr></thead><tbody>{data.items.map((o) => <tr key={o.id}><td>{new Date(o.createdAt).toLocaleString()}</td><td>{o.symbol}</td><td className={o.side === "buy" ? "up" : "down"}>{sideLabel(o.side)}</td><td>{orderTypeLabel(o.type)}</td><td>{num(o.amount)}</td><td>{num(o.filledAmount)}</td><td>{num(o.remainingAmount)}</td><td>{money(o.price)} / {money(o.avgFillPrice)}</td><td>{o.leverage}x</td><td>{money(o.fee)}</td><td className={o.closePnl >= 0 ? "up" : "down"}>{money(o.closePnl)}</td><td title={o.reason}>{statusLabel(o.status)}</td></tr>)}</tbody></table></div><Pagination page={data.page} totalPages={data.totalPages} total={data.total} onPage={setPage} /></>;
+  return <><div className="table-scroll"><table><thead><tr><th>时间</th><th>交易对</th><th>方向</th><th>类型</th><th>委托数量</th><th>已成交</th><th>剩余</th><th>委托/成交价</th><th>杠杆</th><th>手续费</th><th>平仓盈亏</th><th>状态</th></tr></thead><tbody>{data.items.map((o) => <tr key={o.id}><td>{new Date(orderDisplayTime(o)).toLocaleString()}</td><td>{o.symbol}</td><td className={o.side === "buy" ? "up" : "down"}>{sideLabel(o.side)}</td><td>{orderTypeLabel(o.type)}</td><td>{num(o.amount)}</td><td>{num(o.filledAmount)}</td><td>{num(o.remainingAmount)}</td><td>{money(o.price)} / {money(o.avgFillPrice)}</td><td>{o.leverage}x</td><td>{money(o.fee)}</td><td className={o.closePnl >= 0 ? "up" : "down"}>{money(o.closePnl)}</td><td title={o.reason}>{statusLabel(o.status)}</td></tr>)}</tbody></table></div><Pagination page={data.page} totalPages={data.totalPages} total={data.total} onPage={setPage} /></>;
 }
 
 function Pagination({ page, totalPages, total, onPage }: { page: number; totalPages: number; total: number; onPage: (page: number) => void }) {
@@ -988,6 +990,10 @@ function orderTypeLabel(type: "market" | "limit") {
 function statusLabel(status: "open" | "partial" | "filled" | "rejected" | "canceled") {
   const labels = { open: "挂单中", partial: "部分成交", filled: "已成交", rejected: "已拒绝", canceled: "已取消" };
   return labels[status];
+}
+
+function orderDisplayTime(order: Order) {
+  return order.filledAt ?? order.updatedAt ?? order.createdAt;
 }
 
 function accountKindLabel(kind: "paper" | "live") {

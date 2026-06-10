@@ -52,8 +52,6 @@ export const api = {
   deleteAccount: (accountId: string) =>
     fetchJson<{ accounts: TradingAccount[]; account: AccountSnapshot }>(`/api/accounts/${accountId}`, { method: "DELETE", body: JSON.stringify({ confirm: true }) }),
   stopBot: (accountId?: string) => fetchJson<AccountSnapshot>(`/api/bots/stop${accountId ? `?${accountQuery(accountId)}` : ""}`, { method: "POST" }),
-  switchAccount: (accountId: string) =>
-    fetchJson<AccountSnapshot>("/api/accounts/active", { method: "PUT", body: JSON.stringify({ accountId }) }),
   tickers: () => fetchJson<Record<string, Ticker>>("/api/tickers"),
   account: (accountId?: string) => accountId ? fetchJson<AccountSnapshot>(`/api/accounts/${accountId}/snapshot`) : fetchJson<AccountSnapshot>("/api/account"),
   accountStats: (accountId?: string) => fetchJson<AccountStats>(`/api/account/stats${accountId ? `?${accountQuery(accountId)}` : ""}`),

@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS "Order" (
   "positionId" TEXT,
   "reason" TEXT,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME,
+  "filledAt" DATETIME,
   CONSTRAINT "Order_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 `);
@@ -140,9 +142,13 @@ await addColumnIfMissing("Order", "closeAmount", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Order", "closeFee", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Order", "closePnl", "REAL NOT NULL DEFAULT 0");
 await addColumnIfMissing("Order", "positionId", "TEXT");
+await addColumnIfMissing("Order", "updatedAt", "DATETIME");
+await addColumnIfMissing("Order", "filledAt", "DATETIME");
 await prisma.$executeRawUnsafe(`UPDATE "Order" SET "filledAmount" = "amount" WHERE "status" = 'filled' AND "filledAmount" = 0;`);
 await prisma.$executeRawUnsafe(`UPDATE "Order" SET "remainingAmount" = CASE WHEN "status" IN ('open', 'partial') THEN MAX("amount" - "filledAmount", 0) ELSE 0 END WHERE "remainingAmount" = 0;`);
 await prisma.$executeRawUnsafe(`UPDATE "Order" SET "avgFillPrice" = "price" WHERE "status" = 'filled' AND "avgFillPrice" = 0;`);
+await prisma.$executeRawUnsafe(`UPDATE "Order" SET "updatedAt" = COALESCE("updatedAt", "createdAt");`);
+await prisma.$executeRawUnsafe(`UPDATE "Order" SET "filledAt" = COALESCE("filledAt", "updatedAt", "createdAt") WHERE "status" = 'filled';`);
 await prisma.$executeRawUnsafe(`
 UPDATE "Order"
 SET "fee" = "filledAmount" * CASE WHEN "avgFillPrice" > 0 THEN "avgFillPrice" ELSE "price" END * ${paperTakerFeeRate}
@@ -181,6 +187,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "Order_accountId_clientOrderId_key" ON "Order"
 await prisma.$executeRawUnsafe(`
 CREATE TABLE IF NOT EXISTS "AccountEquityEvent" (
   "id" TEXT NOT NULL PRIMARY KEY,
+  "eventKey" TEXT NOT NULL,
   "accountId" TEXT NOT NULL,
   "orderId" TEXT NOT NULL,
   "positionId" TEXT,
@@ -198,8 +205,12 @@ CREATE TABLE IF NOT EXISTS "AccountEquityEvent" (
   CONSTRAINT "AccountEquityEvent_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 `);
-await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "AccountEquityEvent_orderId_key" ON "AccountEquityEvent"("orderId");`);
+await addColumnIfMissing("AccountEquityEvent", "eventKey", "TEXT");
+await prisma.$executeRawUnsafe(`UPDATE "AccountEquityEvent" SET "eventKey" = COALESCE("eventKey", "orderId");`);
+await prisma.$executeRawUnsafe(`DROP INDEX IF EXISTS "AccountEquityEvent_orderId_key";`);
+await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "AccountEquityEvent_eventKey_key" ON "AccountEquityEvent"("eventKey");`);
 await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AccountEquityEvent_accountId_createdAt_idx" ON "AccountEquityEvent"("accountId", "createdAt");`);
+await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AccountEquityEvent_orderId_idx" ON "AccountEquityEvent"("orderId");`);
 
 await prisma.$disconnect();
 

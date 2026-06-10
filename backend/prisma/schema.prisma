@@ -87,6 +87,8 @@ model Order {
   positionId String?
   reason    String?
   createdAt DateTime @default(now())
+  updatedAt DateTime?
+  filledAt DateTime?
   account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@index([accountId, createdAt])
@@ -96,8 +98,9 @@ model Order {
 
 model AccountEquityEvent {
   id          String   @id @default(cuid())
+  eventKey    String   @unique
   accountId   String
-  orderId     String   @unique
+  orderId     String
   positionId  String?
   symbol      String
   side        String
@@ -113,4 +116,5 @@ model AccountEquityEvent {
   account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@index([accountId, createdAt])
+  @@index([orderId])
 }

@@ -13,7 +13,14 @@ type LoadedAccount = Account & {
 
 const accountInclude = {
   positions: true,
-  orders: { orderBy: { createdAt: "desc" as const }, take: 200 }
+  orders: {
+    where: {
+      type: "limit",
+      status: { in: ["open", "partial"] }
+    },
+    orderBy: { createdAt: "desc" as const },
+    take: config.paperMaxOpenLimitOrders
+  }
 };
 
 export class AccountManager {
@@ -95,17 +102,6 @@ export class AccountManager {
     this.activeAccountId = accountId;
     if (account.kind === "paper" && !this.paperBrokers.has(account.id)) this.loadPaperBroker(account);
     return this.snapshot();
-  }
-
-  activeId() {
-    return this.activeAccountId;
-  }
-
-  async activeAccount() {
-    const account = await prisma.account.findUnique({ where: { id: this.activeAccountId } });
-    if (!account) throw new Error("当前账户不存在");
-    if (account.archivedAt) throw new Error("当前账户已归档");
-    return account;
   }
 
   async snapshot(): Promise<AccountSnapshot> {
@@ -228,10 +224,6 @@ export class AccountManager {
     return order;
   }
 
-  async cancelPaperOrder(orderId: string) {
-    return this.cancelPaperOrderForAccount(this.activeAccountId, orderId);
-  }
-
   async cancelPaperOrderForAccount(accountId: string, orderId: string) {
     const broker = this.paperBrokers.get(accountId);
     if (!broker) throw new Error("模拟账户不存在");
@@ -239,10 +231,6 @@ export class AccountManager {
     if (!order) throw new Error("委托不存在或不可取消");
     await this.persistPaperState(order.accountId);
     return order;
-  }
-
-  async updatePaperPositionRisk(input: UpdatePositionRiskRequest) {
-    return this.updatePaperPositionRiskForAccount(this.activeAccountId, input);
   }
 
   async updatePaperPositionRiskForAccount(accountId: string, input: UpdatePositionRiskRequest) {
@@ -365,26 +353,35 @@ export class AccountManager {
         });
       }
       const closingOrderIds = orders.filter((order) => order.closeAmount > 0).map((order) => order.id);
-      const existingEvents = new Map(
-        closingOrderIds.length === 0
-          ? []
-          : (await tx.accountEquityEvent.findMany({
-              where: { accountId, orderId: { in: closingOrderIds } },
-              select: { orderId: true, closeAmount: true }
-            })).map((event) => [event.orderId, event.closeAmount])
-      );
+      const existingEvents = new Map<string, { closeAmount: number; closePnl: number; fee: number }>();
+      if (closingOrderIds.length > 0) {
+        const events = await tx.accountEquityEvent.findMany({
+          where: { accountId, orderId: { in: closingOrderIds } },
+          select: { orderId: true, closeAmount: true, closePnl: true, fee: true }
+        });
+        for (const event of events) {
+          const current = existingEvents.get(event.orderId) ?? { closeAmount: 0, closePnl: 0, fee: 0 };
+          existingEvents.set(event.orderId, {
+            closeAmount: current.closeAmount + event.closeAmount,
+            closePnl: current.closePnl + event.closePnl,
+            fee: current.fee + event.fee
+          });
+        }
+      }
       for (const order of orders) {
         await tx.order.upsert({
           where: { id: order.id },
           update: serializeOrder(order),
           create: serializeOrder(order)
         });
-        const recordedCloseAmount = existingEvents.get(order.id) ?? 0;
-        if (order.closeAmount > recordedCloseAmount) {
-          await tx.accountEquityEvent.upsert({
-            where: { orderId: order.id },
-            update: serializeEquityEvent(order, snapshot),
-            create: serializeEquityEvent(order, snapshot)
+        const recorded = existingEvents.get(order.id) ?? { closeAmount: 0, closePnl: 0, fee: 0 };
+        if (order.closeAmount > recorded.closeAmount) {
+          const event = serializeEquityEvent(order, snapshot, recorded);
+          await tx.accountEquityEvent.create({ data: event });
+          existingEvents.set(order.id, {
+            closeAmount: order.closeAmount,
+            closePnl: order.closePnl,
+            fee: order.closeFee
           });
         }
       }
@@ -469,7 +466,8 @@ export class AccountManager {
     const broker = new PaperBroker(account.id, account.name, account.cash, {
       maker: config.paperMakerFeeRate,
       taker: config.paperTakerFeeRate,
-      limitFillRatio: config.paperLimitFillRatio
+      limitFillRatio: config.paperLimitFillRatio,
+      maxOpenLimitOrders: config.paperMaxOpenLimitOrders
     });
     broker.load({
       cash: account.cash,
@@ -554,7 +552,9 @@ function serializeOrder(order: Order) {
     status: order.status,
     positionId: order.positionId,
     reason: order.reason,
-    createdAt: new Date(order.createdAt)
+    createdAt: new Date(order.createdAt),
+    updatedAt: order.updatedAt ? new Date(order.updatedAt) : undefined,
+    filledAt: order.filledAt ? new Date(order.filledAt) : undefined
   };
 }
 
@@ -580,32 +580,44 @@ function deserializeOrder(order: DbOrder): Order {
     status: order.status as Order["status"],
     positionId: order.positionId ?? undefined,
     reason: order.reason ?? undefined,
-    createdAt: order.createdAt.getTime()
+    createdAt: order.createdAt.getTime(),
+    updatedAt: order.updatedAt?.getTime(),
+    filledAt: order.filledAt?.getTime()
   };
 }
 
-function serializeEquityEvent(order: Order, snapshot: AccountSnapshot) {
+function serializeEquityEvent(
+  order: Order,
+  snapshot: AccountSnapshot,
+  recorded: { closeAmount: number; closePnl: number; fee: number }
+) {
+  const closeAmount = order.closeAmount - recorded.closeAmount;
+  const closePnl = order.closePnl - recorded.closePnl;
+  const fee = order.closeFee - recorded.fee;
+  const eventTime = order.updatedAt ?? order.filledAt ?? Date.now();
   return {
+    eventKey: `${order.id}:${order.filledAmount}:${order.closeAmount}`,
     accountId: order.accountId,
     orderId: order.id,
     positionId: order.positionId,
     symbol: order.symbol,
     side: order.side,
-    closeAmount: order.closeAmount,
+    closeAmount,
     closePrice: order.avgFillPrice || order.price,
-    closePnl: order.closePnl,
-    fee: order.closeFee,
+    closePnl,
+    fee,
     realizedPnl: snapshot.realizedPnl,
     equity: snapshot.equity,
     cash: snapshot.cash,
     totalFees: snapshot.totalFees,
-    createdAt: new Date(order.createdAt)
+    createdAt: new Date(eventTime)
   };
 }
 
 function deserializeEquityEvent(event: DbAccountEquityEvent): AccountEquityEvent {
   return {
     id: event.id,
+    eventKey: event.eventKey,
     accountId: event.accountId,
     orderId: event.orderId,
     positionId: event.positionId ?? undefined,
